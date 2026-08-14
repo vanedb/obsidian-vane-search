@@ -69,7 +69,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
@@ -1088,7 +1088,7 @@ git commit -m "feat: VaneIndex seam and MemoryVaneIndex over wasm HNSW"
 - Produces:
   - Message types: `IndexRequest = { id, type: 'init', dim, capacity } | { id, type: 'insert', entries: { vaneId, vector }[] } | { id, type: 'search', query, k } | { id, type: 'stats' }`; `IndexResponse = { id, ok: true, result?: unknown } | { id, ok: false, error: string }`
   - `createIndexHost(factory: (opts: VaneIndexOptions) => VaneIndex): (msg: IndexRequest) => IndexResponse` — pure dispatcher, no worker needed to test it
-  - `interface Transport { post(msg: IndexRequest): void; onResponse(cb: (r: IndexResponse) => void): void }`
+  - `interface Transport { post(msg): void; onResponse(cb): void; onFatal?(cb): void }` — `onFatal` rejects every in-flight request on a worker crash (fail fast; respawn is Phase 3)
   - `class IndexClient` — `init(dim, capacity)`, `insert(entries): Promise<void>`, `search(query, k): Promise<IndexHit[]>`, `stats(): Promise<{ size: number; ready: boolean }>`
   - `loopbackTransport(handle)` (tests), `workerTransport(w: Worker)`, `spawnIndexWorker(): Worker` (Blob URL from `__INDEX_WORKER_SOURCE__`)
 
@@ -1111,7 +1111,7 @@ export function loopbackTransport(handle: (msg: IndexRequest) => IndexResponse):
 // tests/unit/index-host.test.ts
 import { describe, it, expect } from 'vitest';
 import { createIndexHost } from '../../src/index/index-host';
-import { IndexClient } from '../../src/index/index-client';
+import { IndexClient, type Transport } from '../../src/index/index-client';
 import { loopbackTransport } from '../helpers/loopback';
 import type { IndexHit, VaneIndex, VaneIndexOptions } from '../../src/index/vane-index';
 
@@ -1131,9 +1131,8 @@ class StubIndex implements VaneIndex {
 
 describe('index host protocol', () => {
   const setup = () => {
-    let stub: StubIndex | null = null;
-    const handle = createIndexHost((opts: VaneIndexOptions) => (stub = new StubIndex()));
-    return { client: new IndexClient(loopbackTransport(handle)), getStub: () => stub };
+    const handle = createIndexHost((_opts: VaneIndexOptions) => new StubIndex());
+    return { client: new IndexClient(loopbackTransport(handle)) };
   };
 
   it('init → insert → search → stats round-trip', async () => {
@@ -1166,6 +1165,17 @@ describe('index host protocol', () => {
     expect(a).toEqual({ size: 1, ready: true });
     expect(b[0].vaneId).toBe(1);
   });
+
+  it('a fatal transport error rejects every in-flight request', async () => {
+    let fatal: ((e: Error) => void) | undefined;
+    const t: Transport = { post: () => {}, onResponse: () => {}, onFatal: (cb) => { fatal = cb; } };
+    const client = new IndexClient(t);
+    const p1 = client.stats();
+    const p2 = client.search(new Float32Array(4), 1);
+    fatal!(new Error('worker crashed'));
+    await expect(p1).rejects.toThrow('worker crashed');
+    await expect(p2).rejects.toThrow('worker crashed');
+  });
 });
 ```
 
@@ -1193,6 +1203,8 @@ export type IndexResponse =
 export interface Transport {
   post(msg: IndexRequest): void;
   onResponse(cb: (r: IndexResponse) => void): void;
+  /** Fatal transport failure (worker crash): the client rejects everything in flight. */
+  onFatal?(cb: (err: Error) => void): void;
 }
 
 export class IndexClient {
@@ -1205,6 +1217,11 @@ export class IndexClient {
       if (!p) return;
       this.pending.delete(r.id);
       r.ok ? p.resolve(r.result) : p.reject(new Error(r.error));
+    });
+    transport.onFatal?.((err) => {
+      const inFlight = [...this.pending.values()];
+      this.pending.clear();
+      for (const p of inFlight) p.reject(err);
     });
   }
 
@@ -1234,6 +1251,7 @@ export function workerTransport(w: Worker): Transport {
   return {
     post: (msg) => w.postMessage(msg),
     onResponse: (cb) => { w.onmessage = (e: MessageEvent) => cb(e.data as IndexResponse); },
+    onFatal: (cb) => { w.onerror = (e) => cb(new Error(`index worker crashed: ${e.message}`)); },
   };
 }
 ```
@@ -1291,13 +1309,10 @@ scope.onmessage = (e: MessageEvent) => scope.postMessage(handle(e.data as IndexR
 ```ts
 // src/index/spawn-worker.ts — main-thread side; __INDEX_WORKER_SOURCE__ injected by esbuild
 export function spawnIndexWorker(): Worker {
+  // The Blob URL is deliberately not revoked: some WebViews load worker scripts
+  // lazily and an early revoke is a race. One URL per session is a non-leak.
   const blob = new Blob([__INDEX_WORKER_SOURCE__], { type: 'text/javascript' });
-  const url = URL.createObjectURL(blob);
-  try {
-    return new Worker(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  return new Worker(URL.createObjectURL(blob));
 }
 ```
 
@@ -1456,6 +1471,30 @@ describe('runFullIndex', () => {
     const occ = await searchOccurrences(client, gen, 'duplicate content here');
     expect(new Set(occ.slice(0, 2))).toEqual(new Set(['a/dup.md#0', 'b/dup.md#0']));
   });
+
+  it('a NEW generation re-indexes unchanged files (no stale mtime/size skip)', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    // simulate a provider/chunker change: new fingerprint, fresh generation + worker
+    const client2 = freshClient();
+    await client2.init(64, capacityFor(100));
+    const gen2 = newGeneration(2, { embeddingFingerprint: FP + ':v2', graphFingerprint: GRAPH_FP, dim: 64 });
+    await saveGeneration(db, gen2);
+    const res = await runFullIndex({ db, source, provider, client: client2, gen: gen2 });
+    expect(res.indexed).toBe(3); // mtime/size never moved, but the new generation must not skip
+    expect(Object.keys(gen2.idMap)).toHaveLength(3);
+  });
+
+  it('incremental run after activation keeps the generation active', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    await activateGeneration(db, gen);
+    source.set('bread.md', 'new content after activation', 2);
+    await runFullIndex({ db, source, provider, client, gen }); // re-persists gen per file
+    const active = await loadActiveGeneration(db);
+    expect(active?.state).toBe('active'); // regression: saves must never demote to 'building'
+    expect(active?.tombstones.length).toBeGreaterThan(0);
+  });
 });
 ```
 
@@ -1505,7 +1544,10 @@ export async function runFullIndex(deps: {
 
   for (const f of files) {
     const prev = fileRows.get(f.path);
-    if (prev && prev.mtime === f.mtime && prev.size === f.size) {
+    // The generation check matters: after a provider/chunker change the new
+    // generation starts empty, and a files row from the OLD generation must not
+    // satisfy the skip even though mtime/size never moved.
+    if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size) {
       skipped++; deps.onProgress?.(++done, files.length); continue;
     }
 
@@ -1578,7 +1620,7 @@ export async function runFullIndex(deps: {
 - [ ] **Step 5: Run to verify pass**
 
 Run: `npx vitest run tests/integration/index-and-search.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -1700,7 +1742,7 @@ export async function loadGenerationIntoIndex(deps: {
 - [ ] **Step 4: Run to verify pass**
 
 Run: `npx vitest run tests/integration/index-and-search.test.ts`
-Expected: PASS (6 tests). This is the spec's "persist → reload → identical results" and "restart with tombstones" failure-matrix coverage.
+Expected: PASS (8 tests). This is the spec's "persist → reload → identical results" and "restart with tombstones" failure-matrix coverage.
 
 - [ ] **Step 5: Commit**
 
@@ -1946,8 +1988,8 @@ export class VaneSearchModal extends SuggestModal<NoteResult> {
   }
 
   async getSuggestions(query: string): Promise<NoteResult[]> {
-    if (!query.trim()) return [];
-    const token = this.gate.issue();
+    const token = this.gate.issue(); // issued even for empty input — invalidates in-flight searches
+    if (!query.trim()) { this.last = []; return []; }
     await sleep(DEBOUNCE_MS); // debounce: newest keystroke wins
     if (!this.gate.isCurrent(token)) return this.last;
     const results = await this.svc.search(query);
@@ -2002,6 +2044,7 @@ export default class VaneSearchPlugin extends Plugin {
   private search: SearchService | null = null;
   private status = 'starting';
   private statusEl: HTMLElement | null = null;
+  private indexing = false;
 
   async onload() {
     // Light onload (spec): commands only; real init after layout is ready.
@@ -2089,22 +2132,32 @@ export default class VaneSearchPlugin extends Plugin {
 
   private async indexVault() {
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
-    const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
-    if (!this.gen || this.gen.embeddingFingerprint !== fp) {
-      this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
-        { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
-      await saveGeneration(this.db, this.gen);
-      await this.client.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length * 2));
+    if (this.indexing) { new Notice('Vane Search: indexing is already running'); return; }
+    this.indexing = true;
+    try {
+      const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
+      if (!this.gen || this.gen.embeddingFingerprint !== fp) {
+        this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
+          { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
+        await saveGeneration(this.db, this.gen);
+        await this.client.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+      }
+      const res = await runFullIndex({
+        db: this.db, source: this.fileSource(), provider: this.provider,
+        client: this.client, gen: this.gen,
+        onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+      });
+      await activateGeneration(this.db, this.gen);
+      await this.refreshChunkMeta();
+      this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+      new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
+    } catch (e) {
+      console.error('vane-search: indexing failed', e);
+      this.setStatus('indexing failed — see console');
+      new Notice('Vane Search: indexing failed — see the developer console.');
+    } finally {
+      this.indexing = false;
     }
-    const res = await runFullIndex({
-      db: this.db, source: this.fileSource(), provider: this.provider,
-      client: this.client, gen: this.gen,
-      onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
-    });
-    await activateGeneration(this.db, this.gen);
-    await this.refreshChunkMeta();
-    this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
-    new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
   }
 }
 ```
@@ -2211,6 +2264,7 @@ Expected: the GitHub Actions run is green. Phase 1 exit criteria are now all ver
 
 - Deleted-file reconciliation, vault event watching, debounced incremental indexing → Phase 2 (`Indexer`).
 - Real chunking by headings, token budgets → Phase 2 (`Chunker`, bumps `CHUNKER_VERSION`).
-- Real providers, consent UX, `SecretStorage`, error backoff → Phase 3.
+- Real providers, consent UX, `SecretStorage`, error backoff, worker-crash respawn → Phase 3 (Phase 1 fails fast: a crash rejects in-flight requests via `Transport.onFatal`).
+- Generation-scoped chunk rows: `chunks` is shared mutable state across generations, so a crash mid-rebuild after a provider/chunker change degrades the OLD generation's restart to reported drift (not a crash). Correct old-gen-keeps-serving semantics arrive with Phase 4's replacement-build protocol.
 - Graph bytes in the generation record, replacement build worker, warm start → Phase 4.
 - Snippets from `offsets`, similarity-floor calibration, related notes → Phases 5–6.
