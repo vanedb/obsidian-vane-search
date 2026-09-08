@@ -18,12 +18,20 @@ export class MemoryVaneIndex implements VaneIndex {
 
   search(query: Float32Array, k: number): IndexHit[] {
     const res = this.idx.search(query, k); // ids/distances rank order, ascending distance
-    const hits: IndexHit[] = [];
-    for (let i = 0; i < res.length; i++) {
-      hits.push({ vaneId: Number(res.ids[i]), score: -res.distances[i] });
+    try {
+      // res.ids / res.distances are wasm-bindgen getters: each access invokes a wasm
+      // export and copies the whole array. Read once, then loop over the local copies.
+      const ids = res.ids;
+      const distances = res.distances;
+      const n = res.length;
+      const hits: IndexHit[] = [];
+      for (let i = 0; i < n; i++) {
+        hits.push({ vaneId: Number(ids[i]), score: -distances[i] });
+      }
+      return hits;
+    } finally {
+      res.free();
     }
-    res.free();
-    return hits;
   }
 
   size(): number { return this.idx.size(); }
