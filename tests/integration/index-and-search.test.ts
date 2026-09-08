@@ -126,6 +126,31 @@ describe('runFullIndex', () => {
     expect(active?.state).toBe('active'); // regression: saves must never demote to 'building'
     expect(active?.tombstones.length).toBeGreaterThan(0);
   });
+
+  it('a failed index insert leaves the generation untouched; a retry succeeds', async () => {
+    const { db, source, client, gen } = await setup();
+    let failNext = true;
+    const flaky = new Proxy(client, {
+      get(target, prop) {
+        if (prop === 'insert') {
+          return (entries: { vaneId: number; vector: Float32Array }[]) => {
+            if (failNext) { failNext = false; return Promise.reject(new Error('boom')); }
+            return target.insert(entries);
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+    await expect(runFullIndex({ db, source, provider, client: flaky, gen })).rejects.toThrow('boom');
+    // nothing was applied for the failed file: the insert rejected before any
+    // generation mutation, so gen (and its rev map) must be exactly as before.
+    expect(gen.idMap).toEqual({});
+    expect(gen.tombstones).toEqual([]);
+    expect(gen.nextVaneId).toBe(0);
+
+    const res = await runFullIndex({ db, source, provider, client, gen });
+    expect(res).toEqual({ indexed: 3, skipped: 0 });
+  });
 });
 
 describe('restart: rebuild from IndexedDB', () => {

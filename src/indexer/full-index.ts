@@ -70,22 +70,44 @@ export async function runFullIndex(deps: {
       chunks.forEach((c) => tx1.objectStore('chunks').put(c.row));
       await txDone(tx1);
 
-      // Step 2: insert into the live index; supersede old occurrences via tombstones.
-      const entries: { vaneId: number; vector: Float32Array }[] = [];
+      // Reuse just-embedded vectors by inputHash; only chunks that already had a
+      // stored vector need an IDB round-trip.
+      const justEmbedded = new Map<string, Float32Array>();
+      missing.forEach((c, i) => justEmbedded.set(c.row.inputHash, embedded[i]));
+      const storedVectors = new Map<string, Float32Array>();
       for (const c of changed) {
+        if (justEmbedded.has(c.row.inputHash) || storedVectors.has(c.row.inputHash)) continue;
         const vecRow = await reqAsPromise<VectorRow>(
           db.transaction('vectors').objectStore('vectors').get([gen.embeddingFingerprint, c.row.inputHash]));
+        storedVectors.set(c.row.inputHash, vecRow.vector);
+      }
+
+      // Step 2: build entries and the planned generation mutations WITHOUT touching
+      // `gen` yet — if client.insert rejects (worker crash), `gen` and `rev` must be
+      // left exactly as they were, so the failure can be retried cleanly.
+      let nextId = gen.nextVaneId;
+      const entries: { vaneId: number; vector: Float32Array }[] = [];
+      const planned: { old: number | undefined; vaneId: number; occurrenceId: string }[] = [];
+      for (const c of changed) {
+        const vector = justEmbedded.get(c.row.inputHash) ?? storedVectors.get(c.row.inputHash)!;
         const old = rev.get(c.row.occurrenceId);
+        const vaneId = nextId++;
+        planned.push({ old, vaneId, occurrenceId: c.row.occurrenceId });
+        entries.push({ vaneId, vector });
+      }
+      await client.insert(entries);
+
+      // Only now — insert succeeded — apply the tombstones, idMap changes, and the
+      // id counter advance, both in `gen` and in the local `rev` map.
+      for (const { old, vaneId, occurrenceId } of planned) {
         if (old !== undefined) {
           gen.tombstones.push(old);
           delete gen.idMap[old];
         }
-        const vaneId = gen.nextVaneId++;
-        gen.idMap[vaneId] = c.row.occurrenceId;
-        rev.set(c.row.occurrenceId, vaneId);
-        entries.push({ vaneId, vector: vecRow.vector });
+        gen.idMap[vaneId] = occurrenceId;
+        rev.set(occurrenceId, vaneId);
       }
-      await client.insert(entries);
+      gen.nextVaneId = nextId;
       indexed++;
     } else {
       skipped++;
