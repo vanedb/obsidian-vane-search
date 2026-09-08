@@ -44,6 +44,27 @@ export class ApproxIndex {
         }
     }
     /**
+     * The capacity hint the graph was built with. Not a limit: the index
+     * grows past it, so this may be smaller than `size`.
+     * @returns {number}
+     */
+    capacity() {
+        const ret = wasm.approxindex_capacity(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Rebuilds the graph without its tombstoned slots, reclaiming their
+     * memory. Live ids and their vectors are preserved; only the removed
+     * slots go. Cost is a full rebuild, so call it when churn has accumulated
+     * rather than after each removal.
+     */
+    compact() {
+        const ret = wasm.approxindex_compact(this.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {bigint} id
      * @returns {boolean}
      */
@@ -62,10 +83,55 @@ export class ApproxIndex {
         return ret >>> 0;
     }
     /**
+     * The `ef_construction` the graph was built with.
+     * @returns {number}
+     */
+    ef_construction() {
+        const ret = wasm.approxindex_ef_construction(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @returns {number}
      */
     get ef_search() {
         const ret = wasm.approxindex_ef_search(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * The same operation as `get_vector`, under the spelling `FlatIndex` uses.
+     * Both exist so a program is not tied to one index type (#85).
+     * @param {bigint} id
+     * @returns {Float32Array}
+     */
+    get(id) {
+        const ret = wasm.approxindex_get(this.__wbg_ptr, id);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * The vector stored under `id`, as a `Float32Array`.
+     * @param {bigint} id
+     * @returns {Float32Array}
+     */
+    get_vector(id) {
+        const ret = wasm.approxindex_get_vector(this.__wbg_ptr, id);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * The graph's `M`.
+     * @returns {number}
+     */
+    m() {
+        const ret = wasm.approxindex_m(this.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -86,16 +152,20 @@ export class ApproxIndex {
         }
     }
     /**
+     * `seed` is optional and defaults to 42, the value this constructor used
+     * to hardcode. Supplying it makes construction reproducible: two indexes
+     * built from the same vectors with the same seed have the same topology.
      * @param {number} dim
      * @param {string} metric
      * @param {number} capacity
      * @param {number} m
      * @param {number} ef_construction
+     * @param {number | null} [seed]
      */
-    constructor(dim, metric, capacity, m, ef_construction) {
+    constructor(dim, metric, capacity, m, ef_construction, seed) {
         const ptr0 = passStringToWasm0(metric, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.approxindex_new(dim, ptr0, len0, capacity, m, ef_construction);
+        const ret = wasm.approxindex_new(dim, ptr0, len0, capacity, m, ef_construction, !isLikeNone(seed), isLikeNone(seed) ? 0 : seed);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -106,7 +176,12 @@ export class ApproxIndex {
     /**
      * Removes the vector stored under `id`. Tombstoned: the node keeps its
      * graph links, which may be the only route between live neighbourhoods,
-     * and simply stops appearing in results.
+     * and simply stops appearing in results. `tombstones` counts them and
+     * `compact` reclaims them.
+     *
+     * Takes `&self` like every other mutator on this type. With `&mut self`,
+     * wasm-bindgen gives a JS caller holding any other borrow of the object
+     * "recursive use of an object detected" rather than a deletion.
      * @param {bigint} id
      */
     remove(id) {
@@ -136,6 +211,14 @@ export class ApproxIndex {
         return SearchResults.__wrap(ret[0]);
     }
     /**
+     * The seed the graph was built with.
+     * @returns {bigint}
+     */
+    seed() {
+        const ret = wasm.approxindex_seed(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * @param {number} ef
      */
     set ef_search(ef) {
@@ -149,6 +232,18 @@ export class ApproxIndex {
      */
     size() {
         const ret = wasm.approxindex_size(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * How many removed slots the graph still carries.
+     *
+     * A browser is the most memory-constrained runtime this crate targets, and
+     * a tombstone holds its vector and links until compaction. Without this a
+     * caller could delete but could not tell what deleting had cost.
+     * @returns {number}
+     */
+    tombstones() {
+        const ret = wasm.approxindex_tombstones(this.__wbg_ptr);
         return ret >>> 0;
     }
 }

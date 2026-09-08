@@ -14,18 +14,57 @@ export class ApproxIndex {
      * on error the index is unchanged.
      */
     add_batch(ids: BigUint64Array, vectors: Float32Array): void;
+    /**
+     * The capacity hint the graph was built with. Not a limit: the index
+     * grows past it, so this may be smaller than `size`.
+     */
+    capacity(): number;
+    /**
+     * Rebuilds the graph without its tombstoned slots, reclaiming their
+     * memory. Live ids and their vectors are preserved; only the removed
+     * slots go. Cost is a full rebuild, so call it when churn has accumulated
+     * rather than after each removal.
+     */
+    compact(): void;
     contains(id: bigint): boolean;
     dimension(): number;
+    /**
+     * The `ef_construction` the graph was built with.
+     */
+    ef_construction(): number;
+    /**
+     * The same operation as `get_vector`, under the spelling `FlatIndex` uses.
+     * Both exist so a program is not tied to one index type (#85).
+     */
+    get(id: bigint): Float32Array;
+    /**
+     * The vector stored under `id`, as a `Float32Array`.
+     */
+    get_vector(id: bigint): Float32Array;
+    /**
+     * The graph's `M`.
+     */
+    m(): number;
     /**
      * The metric this index was built with, in the spelling the constructor
      * accepts.
      */
     metric(): string;
-    constructor(dim: number, metric: string, capacity: number, m: number, ef_construction: number);
+    /**
+     * `seed` is optional and defaults to 42, the value this constructor used
+     * to hardcode. Supplying it makes construction reproducible: two indexes
+     * built from the same vectors with the same seed have the same topology.
+     */
+    constructor(dim: number, metric: string, capacity: number, m: number, ef_construction: number, seed?: number | null);
     /**
      * Removes the vector stored under `id`. Tombstoned: the node keeps its
      * graph links, which may be the only route between live neighbourhoods,
-     * and simply stops appearing in results.
+     * and simply stops appearing in results. `tombstones` counts them and
+     * `compact` reclaims them.
+     *
+     * Takes `&self` like every other mutator on this type. With `&mut self`,
+     * wasm-bindgen gives a JS caller holding any other borrow of the object
+     * "recursive use of an object detected" rather than a deletion.
      */
     remove(id: bigint): void;
     /**
@@ -37,7 +76,19 @@ export class ApproxIndex {
      * callers could act on the wrong record (#39).
      */
     search(query: Float32Array, k: number): SearchResults;
+    /**
+     * The seed the graph was built with.
+     */
+    seed(): bigint;
     size(): number;
+    /**
+     * How many removed slots the graph still carries.
+     *
+     * A browser is the most memory-constrained runtime this crate targets, and
+     * a tombstone holds its vector and links until compaction. Without this a
+     * caller could delete but could not tell what deleting had cost.
+     */
+    tombstones(): number;
     ef_search: number;
 }
 
@@ -108,15 +159,23 @@ export interface InitOutput {
     readonly __wbg_searchresults_free: (a: number, b: number) => void;
     readonly approxindex_add: (a: number, b: any, c: number, d: number) => [number, number];
     readonly approxindex_add_batch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly approxindex_capacity: (a: number) => number;
+    readonly approxindex_compact: (a: number) => [number, number];
     readonly approxindex_contains: (a: number, b: any) => [number, number, number];
     readonly approxindex_dimension: (a: number) => number;
+    readonly approxindex_ef_construction: (a: number) => number;
     readonly approxindex_ef_search: (a: number) => number;
+    readonly approxindex_get: (a: number, b: any) => [number, number, number, number];
+    readonly approxindex_get_vector: (a: number, b: any) => [number, number, number, number];
+    readonly approxindex_m: (a: number) => number;
     readonly approxindex_metric: (a: number) => [number, number];
-    readonly approxindex_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly approxindex_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly approxindex_remove: (a: number, b: any) => [number, number];
     readonly approxindex_search: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly approxindex_seed: (a: number) => bigint;
     readonly approxindex_set_ef_search: (a: number, b: number) => [number, number];
     readonly approxindex_size: (a: number) => number;
+    readonly approxindex_tombstones: (a: number) => number;
     readonly flatindex_add: (a: number, b: any, c: number, d: number) => [number, number];
     readonly flatindex_add_batch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly flatindex_contains: (a: number, b: any) => [number, number, number];

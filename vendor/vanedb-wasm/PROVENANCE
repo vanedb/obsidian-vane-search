@@ -1,4 +1,4 @@
 source: https://github.com/vanedb/vanedb
-commit: 8a3d92e8ff036d4e855b071f37f5e9b104059c97
-built:  wasm-pack build --target web --release (2026-09-08T09:11:10Z)
+commit: 76c4ce212f60c77d11c84f61be57e888be0c8480
+built:  wasm-pack build --target web --release (2026-09-08T15:12:35Z)
 note:   regenerate with scripts/sync-vanedb.sh — do not edit by hand
