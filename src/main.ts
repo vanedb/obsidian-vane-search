@@ -70,6 +70,10 @@ export default class VaneSearchPlugin extends Plugin {
 
   private async loadSettings() {
     this.vaneSettings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) ?? {});
+    // Object.assign shallow-copies: on first run (no saved data) consentedHosts would
+    // otherwise alias the module-level DEFAULT_SETTINGS.consentedHosts singleton, and the
+    // consent handler's .push would mutate it across plugin instances/vaults. Clone it.
+    this.vaneSettings.consentedHosts = [...this.vaneSettings.consentedHosts];
   }
 
   async saveSettings() { await this.saveData(this.vaneSettings); }
@@ -170,7 +174,7 @@ export default class VaneSearchPlugin extends Plugin {
     }
 
     this.search = new SearchService({
-      provider: this.provider,
+      getProvider: () => this.provider,
       client: this.client,
       resolve: (occ) => this.chunkMeta.get(occ),
       getGen: () => this.gen,

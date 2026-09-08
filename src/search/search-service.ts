@@ -11,7 +11,7 @@ const MAX_WIDENINGS = 2;
 
 export class SearchService {
   constructor(private deps: {
-    provider: EmbeddingProvider;
+    getProvider: () => EmbeddingProvider;
     client: IndexClient;
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
     getGen: () => GenerationRecord | null;
@@ -21,7 +21,7 @@ export class SearchService {
   async search(query: string, limit = 20): Promise<NoteResult[]> {
     const gen = this.deps.getGen();
     if (!gen) return [];
-    const [qv] = await this.deps.provider.embed([query], 'query');
+    const [qv] = await this.deps.getProvider().embed([query], 'query');
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.floor ?? -Infinity;
 

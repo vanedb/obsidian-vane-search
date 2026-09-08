@@ -35,7 +35,7 @@ describe('SearchService', () => {
       { vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.8 }, { vaneId: 2, score: 0.7 },
     ], 3);
     const gen = genWith({ 0: 'a.md#0', 1: 'a.md#1', 2: 'b.md#0' });
-    const svc = new SearchService({ provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen });
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen });
     const results = await svc.search('anything');
     expect(results).toEqual([
       { path: 'a.md', breadcrumb: 'a', score: 0.9 },
@@ -50,7 +50,7 @@ describe('SearchService', () => {
     for (let i = 0; i < 100; i++) idMap[i] = `n${i}.md#0`;
     const tomb = Array.from({ length: 60 }, (_, i) => i);
     const { client, ks } = cannedClient(hits, 100);
-    const svc = new SearchService({ provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap, tomb) });
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap, tomb) });
     const results = await svc.search('anything', 20);
     expect(results).toHaveLength(20);
     expect(results[0].path).toBe('n60.md');
@@ -60,13 +60,13 @@ describe('SearchService', () => {
   it('applies the similarity floor', async () => {
     const { client } = cannedClient([{ vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.1 }], 2);
     const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
-    const svc = new SearchService({ provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
     expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
   });
 
   it('returns [] when no generation is loaded', async () => {
     const { client } = cannedClient([], 0);
-    const svc = new SearchService({ provider, client, resolve: () => undefined, getGen: () => null });
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: () => undefined, getGen: () => null });
     expect(await svc.search('x')).toEqual([]);
   });
 });
