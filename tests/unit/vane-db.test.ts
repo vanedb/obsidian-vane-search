@@ -36,4 +36,30 @@ describe('openVaneDb', () => {
     expect(await reqAsPromise(db.transaction('meta').objectStore('meta').get('schemaVersion'))).toBeTruthy();
     db.close();
   });
+
+  it('txDone rejects on explicit transaction abort', async () => {
+    const db = await openVaneDb('vault-abort-test');
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 });
+    tx.abort();
+    await expect(txDone(tx)).rejects.toThrow();
+  });
+
+  it('reqAsPromise rejects on ConstraintError (duplicate key)', async () => {
+    const db = await openVaneDb('vault-constraint-test');
+    const tx = db.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 });
+    const secondReq = store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 }); // duplicate key
+    await expect(reqAsPromise(secondReq)).rejects.toThrow();
+  });
+
+  it('txDone rejects when a request fails (ConstraintError)', async () => {
+    const db = await openVaneDb('vault-constraint-test2');
+    const tx = db.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 });
+    store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 }); // duplicate key, will fail
+    await expect(txDone(tx)).rejects.toThrow();
+  });
 });

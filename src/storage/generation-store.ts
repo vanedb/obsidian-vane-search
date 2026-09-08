@@ -43,22 +43,19 @@ export async function loadActiveGeneration(db: IDBDatabase): Promise<GenerationR
 
 /**
  * One transaction: the new record becomes active and every other row dies with it.
- * Mutates rec.state in memory on purpose: subsequent saveGeneration(rec) calls
- * (incremental indexing re-persists the record) must keep it 'active' — writing
- * a copy here would let them silently demote the row back to 'building'.
+ * Puts a copy with state 'active' into the database, then mutates rec.state in memory
+ * only after txDone resolves. This ensures subsequent saveGeneration(rec) calls
+ * (incremental indexing re-persists the record) keep it 'active' — if activate fails,
+ * rec remains 'building' and the caller knows the transaction did not commit.
  */
-export function activateGeneration(db: IDBDatabase, rec: GenerationRecord): Promise<void> {
+export async function activateGeneration(db: IDBDatabase, rec: GenerationRecord): Promise<void> {
+  const tx = db.transaction('generations', 'readwrite');
+  const store = tx.objectStore('generations');
+  const keysReq = store.getAllKeys();
+  keysReq.onsuccess = () => {
+    for (const key of keysReq.result) if (key !== rec.generation) store.delete(key);
+    store.put({ ...rec, state: 'active' });
+  };
+  await txDone(tx);
   rec.state = 'active';
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('generations', 'readwrite');
-    const store = tx.objectStore('generations');
-    const keysReq = store.getAllKeys();
-    keysReq.onsuccess = () => {
-      for (const key of keysReq.result) if (key !== rec.generation) store.delete(key);
-      store.put(rec);
-    };
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('activate failed'));
-    tx.onabort = () => reject(tx.error ?? new Error('activate aborted'));
-  });
 }
