@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initWasm } from '../helpers/wasm';
 import { loopbackTransport } from '../helpers/loopback';
 import { MemoryFileSource } from '../helpers/memory-files';
-import { openVaneDb, reqAsPromise } from '../../src/storage/vane-db';
+import { openVaneDb, reqAsPromise, txDone } from '../../src/storage/vane-db';
 import { newGeneration, saveGeneration, activateGeneration, loadActiveGeneration } from '../../src/storage/generation-store';
 import { createIndexHost } from '../../src/index/index-host';
 import { IndexClient } from '../../src/index/index-client';
@@ -13,6 +13,7 @@ import { FakeEmbeddingProvider } from '../../src/providers/fake';
 import { embeddingFingerprint } from '../../src/providers/embedding-provider';
 import { CHUNKER_VERSION } from '../../src/chunker/whole-file';
 import { runFullIndex } from '../../src/indexer/full-index';
+import { loadGenerationIntoIndex } from '../../src/indexer/load-generation';
 
 beforeAll(() => initWasm());
 
@@ -124,5 +125,49 @@ describe('runFullIndex', () => {
     const active = await loadActiveGeneration(db);
     expect(active?.state).toBe('active'); // regression: saves must never demote to 'building'
     expect(active?.tombstones.length).toBeGreaterThan(0);
+  });
+});
+
+describe('restart: rebuild from IndexedDB', () => {
+  it('kill + restart loses nothing — identical results, tombstones respected', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    // create a tombstone before "crashing"
+    source.set('bread.md', 'rye flour hydration experiments', 2);
+    await runFullIndex({ db, source, provider, client, gen });
+    await activateGeneration(db, gen);
+    const before = await searchOccurrences(client, gen, 'rye flour hydration');
+
+    // ---- simulated restart: fresh worker, state only from IDB ----
+    const client2 = freshClient();
+    const gen2 = (await loadActiveGeneration(db))!;
+    expect(gen2.generation).toBe(gen.generation);
+    await client2.init(gen2.dim, capacityFor(Object.keys(gen2.idMap).length + gen2.tombstones.length));
+    const { loaded, missing } = await loadGenerationIntoIndex({ db, client: client2, gen: gen2 });
+    expect(missing).toEqual([]);
+    expect(loaded).toBe(Object.keys(gen2.idMap).length);
+
+    const after = await searchOccurrences(client2, gen2, 'rye flour hydration');
+    expect(after).toEqual(before);
+    const stale = await searchOccurrences(client2, gen2, 'sourdough starter feeding schedule');
+    expect(stale[0]).not.toBe(undefined); // still answers…
+    expect(gen2.tombstones.length).toBeGreaterThan(0); // …with the old id filtered by tombstones
+  });
+
+  it('missing vector rows are reported as drift, not crashed on', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    await activateGeneration(db, gen);
+    // simulate partial IDB eviction: delete one vector row
+    const chunk = await reqAsPromise<{ inputHash: string }>(db.transaction('chunks').objectStore('chunks').get('k8s.md#0'));
+    const tx = db.transaction('vectors', 'readwrite');
+    tx.objectStore('vectors').delete([FP, chunk.inputHash]);
+    await txDone(tx);
+
+    const client2 = freshClient();
+    const gen2 = (await loadActiveGeneration(db))!;
+    await client2.init(gen2.dim, 1024);
+    const { missing } = await loadGenerationIntoIndex({ db, client: client2, gen: gen2 });
+    expect(missing).toEqual(['k8s.md#0']);
   });
 });
