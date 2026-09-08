@@ -1,5 +1,5 @@
 // src/main.ts
-import { Notice, Plugin, TFile } from 'obsidian';
+import { Notice, Plugin, TFile, requestUrl } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
   newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
@@ -8,13 +8,17 @@ import {
 import { IndexClient, workerTransport } from './index/index-client';
 import { spawnIndexWorker } from './index/spawn-worker';
 import { capacityFor } from './index/vane-index';
-import { FakeEmbeddingProvider } from './providers/fake';
-import { embeddingFingerprint } from './providers/embedding-provider';
+import { embeddingFingerprint, type EmbeddingProvider } from './providers/embedding-provider';
+import { EmbeddingError } from './providers/openai-compat';
+import { requestUrlPost } from './providers/http';
 import { CHUNKER_VERSION, type ChunkRow } from './chunker/whole-file';
 import { runFullIndex, type FileSource } from './indexer/full-index';
 import { loadGenerationIntoIndex } from './indexer/load-generation';
 import { SearchService, type ChunkMeta } from './search/search-service';
 import { VaneSearchModal } from './ui/search-modal';
+import { DEFAULT_SETTINGS, buildProvider, isLocalHost, type VaneSettings } from './settings/settings';
+import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
+import { ConsentModal, needsConsent } from './ui/consent-modal';
 
 const GRAPH_FINGERPRINT = 'dot:m16:ef200'; // bump on metric/params/vanedb format change
 
@@ -24,7 +28,10 @@ export default class VaneSearchPlugin extends Plugin {
   private client: IndexClient | null = null;
   private gen: GenerationRecord | null = null;
   private chunkMeta = new Map<string, ChunkMeta>();
-  private provider = new FakeEmbeddingProvider(384); // Phase 3 replaces with configured provider
+  private vaneSettings: VaneSettings = { ...DEFAULT_SETTINGS };
+  private apiKeyId = 'vane-search-api-key';
+  private post = requestUrlPost(requestUrl as unknown as Parameters<typeof requestUrlPost>[0]);
+  private provider!: EmbeddingProvider; // built from settings in onload(), after loadSettings()
   private search: SearchService | null = null;
   private status = 'starting';
   private statusEl: HTMLElement | null = null;
@@ -34,12 +41,17 @@ export default class VaneSearchPlugin extends Plugin {
   private initDone: Promise<void> = Promise.resolve();
 
   async onload() {
+    await this.loadSettings();
+    this.provider = this.makeProvider();
+
     // Light onload (spec): commands only; real init after layout is ready.
     this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => {
       if (!this.search) { new Notice('Vane Search is still starting'); return; }
       new VaneSearchModal(this.app, this.search, () => this.status).open();
     }});
     this.addCommand({ id: 'index-vault', name: 'Index vault', callback: () => void this.indexVault() });
+    this.addCommand({ id: 'rebuild-index', name: 'Rebuild index (re-embed vault)', callback: () => void this.indexVault(true) });
+    this.addSettingTab(new VaneSettingsTab(this.app, this, this.settingsHost()));
     this.statusEl = this.addStatusBarItem();
     this.setStatus('starting');
     this.app.workspace.onLayoutReady(() => {
@@ -54,6 +66,63 @@ export default class VaneSearchPlugin extends Plugin {
     this.unloaded = true;
     this.worker?.terminate();
     this.db?.close();
+  }
+
+  private async loadSettings() {
+    this.vaneSettings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) ?? {});
+  }
+
+  async saveSettings() { await this.saveData(this.vaneSettings); }
+
+  /** Reads the stored API key. An empty string (left by clearApiKey) counts as "no key". */
+  private secret(): string | null {
+    try {
+      const s = this.app.secretStorage?.getSecret?.(this.apiKeyId) ?? null;
+      return s ? s : null;
+    } catch { return null; }
+  }
+
+  private makeProvider(): EmbeddingProvider {
+    return buildProvider(this.vaneSettings, this.secret(), this.post);
+  }
+
+  private openSettingsIfPossible() {
+    try {
+      const anyApp = this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } };
+      anyApp.setting?.open?.();
+      anyApp.setting?.openTabById?.(this.manifest.id);
+    } catch { /* best effort — not a documented API */ }
+  }
+
+  private settingsHost(): SettingsHost {
+    return {
+      settings: this.vaneSettings,
+      saveSettings: () => this.saveSettings(),
+      setApiKey: (key: string) => {
+        this.app.secretStorage.setSecret(this.apiKeyId, key);
+        this.vaneSettings.hasApiKey = true;
+        void this.saveSettings();
+        this.provider = this.makeProvider();
+      },
+      clearApiKey: () => {
+        try { this.app.secretStorage.setSecret(this.apiKeyId, ''); } catch { /* ignore */ }
+        this.vaneSettings.hasApiKey = false;
+        void this.saveSettings();
+        this.provider = this.makeProvider();
+      },
+      hasApiKey: () => !!this.secret(),
+      testConnection: async () => {
+        try {
+          const provider = this.makeProvider();
+          const vecs = await provider.embed(['vane search connection test'], 'query');
+          return { ok: true, dimension: vecs[0]?.length ?? provider.dimension(), message: 'Connected' };
+        } catch (e) {
+          const message = e instanceof EmbeddingError ? e.failure.message : String(e);
+          return { ok: false, message };
+        }
+      },
+      reindex: () => this.indexVault(true),
+    };
   }
 
   private setStatus(s: string) {
@@ -118,19 +187,41 @@ export default class VaneSearchPlugin extends Plugin {
       });
       if (missing.length) console.warn('vane-search: drift, missing rows for', missing);
       this.setStatus(`ready (${total - missing.length} chunks)`);
+    } else if (!isLocalHost(this.vaneSettings.baseUrl) && !this.secret()) {
+      this.setStatus('needs API key');
     } else {
       this.setStatus('no index — run "Index vault"');
     }
   }
 
-  private async indexVault() {
+  private async indexVault(force = false) {
     await this.initDone;
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
+
+    const baseUrl = this.vaneSettings.baseUrl;
+    if (!isLocalHost(baseUrl) && !this.secret()) {
+      new Notice('Vane Search: set your API key in Settings → Vane Search to start indexing.');
+      this.setStatus('needs API key');
+      this.openSettingsIfPossible();
+      return;
+    }
+    if (needsConsent(baseUrl, this.vaneSettings.consentedHosts)) {
+      let host: string;
+      try { host = new URL(baseUrl).host; } catch { host = baseUrl; }
+      new ConsentModal(this.app, host, () => {
+        this.vaneSettings.consentedHosts.push(host);
+        void this.saveSettings().then(() => void this.indexVault(force));
+      }).open();
+      return;
+    }
+
     if (this.indexing) { new Notice('Vane Search: indexing is already running'); return; }
     this.indexing = true;
     try {
+      // Settings may have changed since the provider was last built (e.g. via the settings tab).
+      this.provider = this.makeProvider();
       const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
-      if (!this.gen || this.gen.embeddingFingerprint !== fp) {
+      if (!this.gen || this.gen.embeddingFingerprint !== fp || force) {
         this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
           { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
         await saveGeneration(this.db, this.gen);
@@ -154,8 +245,20 @@ export default class VaneSearchPlugin extends Plugin {
     } catch (e) {
       console.error('vane-search: indexing failed', e);
       if (!this.unloaded) {
-        this.setStatus('indexing failed — see console');
-        new Notice('Vane Search: indexing failed — see the developer console.');
+        if (e instanceof EmbeddingError) {
+          const userMsg = (
+            e.failure.kind === 'auth' ? 'authentication failed — check the API key' :
+            e.failure.kind === 'rate-limit' ? 'rate limited, try again later' :
+            e.failure.kind === 'network' ? `cannot reach ${baseUrl}` :
+            e.failure.kind === 'bad-response' ? 'unexpected response from the provider' :
+            e.failure.message
+          );
+          this.setStatus(`indexing failed — ${userMsg}`);
+          new Notice(`Vane Search: ${userMsg}`);
+        } else {
+          this.setStatus('indexing failed — see console');
+          new Notice('Vane Search: indexing failed — see the developer console.');
+        }
       }
     } finally {
       this.indexing = false;
