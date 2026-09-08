@@ -34,7 +34,7 @@ export function classifyEmbeddingFailure(status: number, headers: Record<string,
   return { kind: 'http', status, message: `Embedding request failed (HTTP ${status}): ${bodyText.slice(0, 200)}` };
 }
 
-class EmbeddingError extends Error {
+export class EmbeddingError extends Error {
   constructor(public failure: EmbeddingFailure) { super(failure.message); this.name = 'EmbeddingError'; }
 }
 
@@ -95,7 +95,11 @@ export class OpenAICompatProvider implements EmbeddingProvider {
         if (!Number.isFinite(emb[j])) throw new EmbeddingError({ kind: 'bad-response', message: `row ${i}: non-finite value` });
         v[j] = emb[j];
       }
-      return l2Normalize(v); // throws on the zero vector (no normal direction)
+      try {
+        return l2Normalize(v); // throws on the zero vector (no normal direction)
+      } catch (e) {
+        throw new EmbeddingError({ kind: 'bad-response', message: `row ${i}: ${(e as Error).message}` });
+      }
     });
   }
 }

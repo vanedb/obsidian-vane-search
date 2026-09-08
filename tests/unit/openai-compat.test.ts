@@ -85,6 +85,12 @@ describe('OpenAICompatProvider', () => {
     await expect(new OpenAICompatProvider(cfg, p401).embed(['a'], 'doc')).rejects.toThrow(/auth|key|401/i);
   });
 
+  it('classifies a transport rejection as a network failure', async () => {
+    const post: HttpPost = async () => { throw new Error('ECONNREFUSED'); };
+    const p = new OpenAICompatProvider(cfg, post);
+    await expect(p.embed(['a'], 'doc')).rejects.toMatchObject({ failure: { kind: 'network' } });
+  });
+
   it('dimension() and maxBatch() reflect config', () => {
     const p = new OpenAICompatProvider(cfg, okPost());
     expect(p.dimension()).toBe(3);
