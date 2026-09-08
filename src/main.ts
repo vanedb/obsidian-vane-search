@@ -1,8 +1,146 @@
-// src/main.ts — placeholder, fully wired in Task 12
-import { Plugin } from 'obsidian';
+// src/main.ts
+import { Notice, Plugin, TFile } from 'obsidian';
+import { openVaneDb, reqAsPromise } from './storage/vane-db';
+import {
+  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
+  type GenerationRecord,
+} from './storage/generation-store';
+import { IndexClient, workerTransport } from './index/index-client';
+import { spawnIndexWorker } from './index/spawn-worker';
+import { capacityFor } from './index/vane-index';
+import { FakeEmbeddingProvider } from './providers/fake';
+import { embeddingFingerprint } from './providers/embedding-provider';
+import { CHUNKER_VERSION, type ChunkRow } from './chunker/whole-file';
+import { runFullIndex, type FileSource } from './indexer/full-index';
+import { loadGenerationIntoIndex } from './indexer/load-generation';
+import { SearchService, type ChunkMeta } from './search/search-service';
+import { VaneSearchModal } from './ui/search-modal';
+
+const GRAPH_FINGERPRINT = 'dot:m16:ef200'; // bump on metric/params/vanedb format change
 
 export default class VaneSearchPlugin extends Plugin {
+  private db: IDBDatabase | null = null;
+  private worker: Worker | null = null;
+  private client: IndexClient | null = null;
+  private gen: GenerationRecord | null = null;
+  private chunkMeta = new Map<string, ChunkMeta>();
+  private provider = new FakeEmbeddingProvider(384); // Phase 3 replaces with configured provider
+  private search: SearchService | null = null;
+  private status = 'starting';
+  private statusEl: HTMLElement | null = null;
+  private indexing = false;
+
   async onload() {
-    console.log('vane-search: loaded');
+    // Light onload (spec): commands only; real init after layout is ready.
+    this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => {
+      if (!this.search) { new Notice('Vane Search is still starting'); return; }
+      new VaneSearchModal(this.app, this.search, () => this.status).open();
+    }});
+    this.addCommand({ id: 'index-vault', name: 'Index vault', callback: () => void this.indexVault() });
+    this.statusEl = this.addStatusBarItem();
+    this.setStatus('starting');
+    this.app.workspace.onLayoutReady(() => void this.initialize().catch((e) => {
+      console.error('vane-search init failed', e);
+      this.setStatus('error — see console');
+    }));
+  }
+
+  onunload() {
+    this.worker?.terminate();
+    this.db?.close();
+  }
+
+  private setStatus(s: string) {
+    this.status = s;
+    this.statusEl?.setText(`Vane: ${s}`);
+  }
+
+  private vaultId(): string {
+    return (this.app as unknown as { appId?: string }).appId ?? this.app.vault.getName();
+  }
+
+  private fileSource(): FileSource {
+    return {
+      list: () => this.app.vault.getMarkdownFiles()
+        .map((f) => ({ path: f.path, mtime: f.stat.mtime, size: f.stat.size })),
+      read: async (path) => {
+        const af = this.app.vault.getAbstractFileByPath(path);
+        if (!(af instanceof TFile)) throw new Error(`not a file: ${path}`);
+        return this.app.vault.cachedRead(af);
+      },
+    };
+  }
+
+  private async refreshChunkMeta() {
+    if (!this.db) return;
+    const rows = await reqAsPromise<ChunkRow[]>(
+      this.db.transaction('chunks').objectStore('chunks').getAll());
+    this.chunkMeta = new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+  }
+
+  private async initialize() {
+    this.db = await openVaneDb(this.vaultId());
+    void navigator.storage?.persist?.(); // spec: request durable storage, degrade gracefully
+    void navigator.storage?.estimate?.().then((e) => console.debug('vane-search: storage estimate', e));
+    this.worker = spawnIndexWorker();
+    this.client = new IndexClient(workerTransport(this.worker));
+
+    this.gen = await loadActiveGeneration(this.db);
+    const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
+    if (this.gen && this.gen.embeddingFingerprint !== fp) {
+      // Phase 3 turns this into a rebuild/keep-read-only modal; Phase 1 serves the old generation.
+      new Notice('Vane Search: index was built with a different provider — run "Index vault" to rebuild.');
+    }
+
+    this.search = new SearchService({
+      provider: this.provider,
+      client: this.client,
+      resolve: (occ) => this.chunkMeta.get(occ),
+      getGen: () => this.gen,
+    });
+
+    if (this.gen) {
+      const total = Object.keys(this.gen.idMap).length;
+      await this.client.init(this.gen.dim, capacityFor(total + this.gen.tombstones.length));
+      await this.refreshChunkMeta();
+      const { missing } = await loadGenerationIntoIndex({
+        db: this.db, client: this.client, gen: this.gen,
+        onProgress: (done, t) => this.setStatus(`index building ${done}/${t}`),
+      });
+      if (missing.length) console.warn('vane-search: drift, missing rows for', missing);
+      this.setStatus(`ready (${total - missing.length} chunks)`);
+    } else {
+      this.setStatus('no index — run "Index vault"');
+    }
+  }
+
+  private async indexVault() {
+    if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
+    if (this.indexing) { new Notice('Vane Search: indexing is already running'); return; }
+    this.indexing = true;
+    try {
+      const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
+      if (!this.gen || this.gen.embeddingFingerprint !== fp) {
+        this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
+          { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
+        await saveGeneration(this.db, this.gen);
+        await this.client.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+      }
+      const res = await runFullIndex({
+        db: this.db, source: this.fileSource(), provider: this.provider,
+        client: this.client, gen: this.gen,
+        onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+      });
+      await activateGeneration(this.db, this.gen);
+      await this.refreshChunkMeta();
+      this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+      new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
+    } catch (e) {
+      console.error('vane-search: indexing failed', e);
+      this.setStatus('indexing failed — see console');
+      new Notice('Vane Search: indexing failed — see the developer console.');
+    } finally {
+      this.indexing = false;
+    }
   }
 }
