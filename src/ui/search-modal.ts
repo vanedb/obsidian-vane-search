@@ -19,7 +19,16 @@ export class VaneSearchModal extends SuggestModal<NoteResult> {
     if (!query.trim()) { this.last = []; return []; }
     await sleep(DEBOUNCE_MS); // debounce: newest keystroke wins
     if (!this.gate.isCurrent(token)) return this.last;
-    const results = await this.svc.search(query);
+    let results: NoteResult[];
+    try {
+      results = await this.svc.search(query);
+    } catch (e) {
+      console.error('vane-search: search failed', e);
+      if (!this.gate.isCurrent(token)) return this.last;
+      this.last = [];
+      this.emptyStateText = 'Search failed — see the developer console';
+      return [];
+    }
     if (!this.gate.isCurrent(token)) return this.last;
     this.last = results;
     this.emptyStateText = results.length ? '' : `No results — ${this.indexStatus()}`;

@@ -29,6 +29,9 @@ export default class VaneSearchPlugin extends Plugin {
   private status = 'starting';
   private statusEl: HTMLElement | null = null;
   private indexing = false;
+  private unloaded = false;
+  private indexReady = false;
+  private initDone: Promise<void> = Promise.resolve();
 
   async onload() {
     // Light onload (spec): commands only; real init after layout is ready.
@@ -39,13 +42,16 @@ export default class VaneSearchPlugin extends Plugin {
     this.addCommand({ id: 'index-vault', name: 'Index vault', callback: () => void this.indexVault() });
     this.statusEl = this.addStatusBarItem();
     this.setStatus('starting');
-    this.app.workspace.onLayoutReady(() => void this.initialize().catch((e) => {
-      console.error('vane-search init failed', e);
-      this.setStatus('error — see console');
-    }));
+    this.app.workspace.onLayoutReady(() => {
+      this.initDone = this.initialize().catch((e) => {
+        console.error('vane-search init failed', e);
+        this.setStatus('error — see console');
+      });
+    });
   }
 
   onunload() {
+    this.unloaded = true;
     this.worker?.terminate();
     this.db?.close();
   }
@@ -80,9 +86,11 @@ export default class VaneSearchPlugin extends Plugin {
 
   private async initialize() {
     this.db = await openVaneDb(this.vaultId());
+    if (this.unloaded) { this.db.close(); this.db = null; return; }
     void navigator.storage?.persist?.(); // spec: request durable storage, degrade gracefully
     void navigator.storage?.estimate?.().then((e) => console.debug('vane-search: storage estimate', e));
     this.worker = spawnIndexWorker();
+    if (this.unloaded) { this.worker.terminate(); this.worker = null; this.db.close(); this.db = null; return; }
     this.client = new IndexClient(workerTransport(this.worker));
 
     this.gen = await loadActiveGeneration(this.db);
@@ -102,6 +110,7 @@ export default class VaneSearchPlugin extends Plugin {
     if (this.gen) {
       const total = Object.keys(this.gen.idMap).length;
       await this.client.init(this.gen.dim, capacityFor(total + this.gen.tombstones.length));
+      this.indexReady = true;
       await this.refreshChunkMeta();
       const { missing } = await loadGenerationIntoIndex({
         db: this.db, client: this.client, gen: this.gen,
@@ -115,6 +124,7 @@ export default class VaneSearchPlugin extends Plugin {
   }
 
   private async indexVault() {
+    await this.initDone;
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
     if (this.indexing) { new Notice('Vane Search: indexing is already running'); return; }
     this.indexing = true;
@@ -124,7 +134,11 @@ export default class VaneSearchPlugin extends Plugin {
         this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
           { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
         await saveGeneration(this.db, this.gen);
+        this.indexReady = false; // force the re-init below even if a later branch is added
+      }
+      if (!this.indexReady) {
         await this.client.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+        this.indexReady = true;
       }
       const res = await runFullIndex({
         db: this.db, source: this.fileSource(), provider: this.provider,
@@ -133,12 +147,16 @@ export default class VaneSearchPlugin extends Plugin {
       });
       await activateGeneration(this.db, this.gen);
       await this.refreshChunkMeta();
-      this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
-      new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
+      if (!this.unloaded) {
+        this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+        new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
+      }
     } catch (e) {
       console.error('vane-search: indexing failed', e);
-      this.setStatus('indexing failed — see console');
-      new Notice('Vane Search: indexing failed — see the developer console.');
+      if (!this.unloaded) {
+        this.setStatus('indexing failed — see console');
+        new Notice('Vane Search: indexing failed — see the developer console.');
+      }
     } finally {
       this.indexing = false;
     }
