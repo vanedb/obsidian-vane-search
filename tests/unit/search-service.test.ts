@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { SearchService } from '../../src/search/search-service';
+import { SearchService, ProviderMismatchError } from '../../src/search/search-service';
 import { IndexClient, type Transport, type IndexRequest, type IndexResponse } from '../../src/index/index-client';
 import { newGeneration, type GenerationRecord } from '../../src/storage/generation-store';
 import { FakeEmbeddingProvider } from '../../src/providers/fake';
+import type { EmbeddingProvider } from '../../src/providers/embedding-provider';
 import type { IndexHit } from '../../src/index/vane-index';
 
 /** Scripted transport: returns canned hits, records requested k values. */
@@ -68,5 +69,24 @@ describe('SearchService', () => {
     const { client } = cannedClient([], 0);
     const svc = new SearchService({ getProvider: () => provider, client, resolve: () => undefined, getGen: () => null });
     expect(await svc.search('x')).toEqual([]);
+  });
+
+  it('rejects with ProviderMismatchError and never embeds when the live provider fingerprint differs from the generation', async () => {
+    const { client } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
+    const gen = genWith({ 0: 'a.md#0' }); // genWith → embeddingFingerprint: 'f'
+    const throwingProvider: EmbeddingProvider = {
+      id: 'fake', model: 'feature-hash-v1',
+      dimension: () => 64,
+      maxBatch: () => 512,
+      embed: () => { throw new Error('must not be called — provider mismatch should short-circuit before embedding'); },
+    };
+    const svc = new SearchService({
+      getProvider: () => throwingProvider,
+      client,
+      resolve: (o) => meta(o.split('#')[0]),
+      getGen: () => gen,
+      getProviderFingerprint: () => 'DIFFERENT',
+    });
+    await expect(svc.search('anything')).rejects.toBeInstanceOf(ProviderMismatchError);
   });
 });

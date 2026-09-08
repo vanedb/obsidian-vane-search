@@ -169,7 +169,7 @@ export default class VaneSearchPlugin extends Plugin {
     this.gen = await loadActiveGeneration(this.db);
     const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
     if (this.gen && this.gen.embeddingFingerprint !== fp) {
-      // Phase 3 turns this into a rebuild/keep-read-only modal; Phase 1 serves the old generation.
+      // Provider/identity changed since last index — surface a rebuild hint (the full rebuild/keep-read-only modal is deferred to a later phase).
       new Notice('Vane Search: index was built with a different provider — run "Index vault" to rebuild.');
     }
 
@@ -178,6 +178,7 @@ export default class VaneSearchPlugin extends Plugin {
       client: this.client,
       resolve: (occ) => this.chunkMeta.get(occ),
       getGen: () => this.gen,
+      getProviderFingerprint: () => embeddingFingerprint(this.provider, CHUNKER_VERSION),
     });
 
     if (this.gen) {

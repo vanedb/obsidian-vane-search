@@ -1,5 +1,5 @@
 import { App, SuggestModal } from 'obsidian';
-import type { SearchService, NoteResult } from '../search/search-service';
+import { ProviderMismatchError, type SearchService, type NoteResult } from '../search/search-service';
 import { RequestGate } from './request-gate';
 
 const DEBOUNCE_MS = 300;
@@ -26,7 +26,9 @@ export class VaneSearchModal extends SuggestModal<NoteResult> {
       console.error('vane-search: search failed', e);
       if (!this.gate.isCurrent(token)) return this.last;
       this.last = [];
-      this.emptyStateText = 'Search failed — see the developer console';
+      this.emptyStateText = e instanceof ProviderMismatchError
+        ? e.message
+        : 'Search failed — see the developer console';
       return [];
     }
     if (!this.gate.isCurrent(token)) return this.last;

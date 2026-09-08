@@ -9,18 +9,35 @@ const FIRST_K = 64;
 const WIDEN_FACTOR = 4;
 const MAX_WIDENINGS = 2;
 
+/** Thrown when the live provider doesn't match the generation being searched — the query must not be embedded remotely. */
+export class ProviderMismatchError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'ProviderMismatchError';
+  }
+}
+
 export class SearchService {
   constructor(private deps: {
     getProvider: () => EmbeddingProvider;
     client: IndexClient;
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
     getGen: () => GenerationRecord | null;
+    getProviderFingerprint?: () => string | null;
     floor?: number;
   }) {}
 
   async search(query: string, limit = 20): Promise<NoteResult[]> {
     const gen = this.deps.getGen();
     if (!gen) return [];
+    if (this.deps.getProviderFingerprint) {
+      const fp = this.deps.getProviderFingerprint();
+      if (fp !== null && fp !== gen.embeddingFingerprint) {
+        throw new ProviderMismatchError(
+          'This index was built with a different embedding provider. Run "Rebuild index" to re-embed with the current provider.'
+        );
+      }
+    }
     const [qv] = await this.deps.getProvider().embed([query], 'query');
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.floor ?? -Infinity;
