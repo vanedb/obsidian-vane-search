@@ -1,0 +1,37 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_approxindex_free: (a: number, b: number) => void;
+export const __wbg_flatindex_free: (a: number, b: number) => void;
+export const __wbg_searchresults_free: (a: number, b: number) => void;
+export const approxindex_add: (a: number, b: any, c: number, d: number) => [number, number];
+export const approxindex_add_batch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const approxindex_contains: (a: number, b: any) => [number, number, number];
+export const approxindex_dimension: (a: number) => number;
+export const approxindex_ef_search: (a: number) => number;
+export const approxindex_metric: (a: number) => [number, number];
+export const approxindex_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const approxindex_remove: (a: number, b: any) => [number, number];
+export const approxindex_search: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const approxindex_set_ef_search: (a: number, b: number) => [number, number];
+export const approxindex_size: (a: number) => number;
+export const flatindex_add: (a: number, b: any, c: number, d: number) => [number, number];
+export const flatindex_add_batch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const flatindex_contains: (a: number, b: any) => [number, number, number];
+export const flatindex_dimension: (a: number) => number;
+export const flatindex_get: (a: number, b: any) => [number, number, number, number];
+export const flatindex_metric: (a: number) => [number, number];
+export const flatindex_new: (a: number, b: number, c: number) => [number, number, number];
+export const flatindex_remove: (a: number, b: any) => [number, number];
+export const flatindex_search: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const flatindex_size: (a: number) => number;
+export const searchresults_distances: (a: number) => [number, number];
+export const searchresults_ids: (a: number) => [number, number];
+export const searchresults_length: (a: number) => number;
+export const version: () => [number, number];
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_start: () => void;
