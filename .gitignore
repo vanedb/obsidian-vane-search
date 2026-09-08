@@ -1,0 +1,6 @@
+node_modules/
+main.js
+spikes/**/node_modules/
+spikes/**/target/
+spikes/model-eval/corpus/
+.DS_Store
