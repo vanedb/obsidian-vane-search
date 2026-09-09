@@ -90,13 +90,6 @@ export default class VaneSearchPlugin extends Plugin {
     return buildProvider(this.vaneSettings, this.secret(), this.post);
   }
 
-  private openSettingsIfPossible() {
-    try {
-      const anyApp = this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } };
-      anyApp.setting?.open?.();
-      anyApp.setting?.openTabById?.(this.manifest.id);
-    } catch { /* best effort — not a documented API */ }
-  }
 
   private settingsHost(): SettingsHost {
     return {
@@ -207,7 +200,6 @@ export default class VaneSearchPlugin extends Plugin {
     if (!isLocalHost(baseUrl) && !this.secret()) {
       new Notice('Vane Search: set your API key in Settings → Vane Search to start indexing.');
       this.setStatus('needs API key');
-      this.openSettingsIfPossible();
       return;
     }
     if (needsConsent(baseUrl, this.vaneSettings.consentedHosts)) {
