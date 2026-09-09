@@ -49,8 +49,8 @@ export default class VaneSearchPlugin extends Plugin {
       if (!this.search) { new Notice('Vane Search is still starting'); return; }
       new VaneSearchModal(this.app, this.search, () => this.status).open();
     }});
-    this.addCommand({ id: 'index-vault', name: 'Index vault', callback: () => void this.indexVault() });
-    this.addCommand({ id: 'rebuild-index', name: 'Rebuild index (re-embed vault)', callback: () => void this.indexVault(true) });
+    this.addCommand({ id: 'index-vault', name: 'Index new and changed notes', callback: () => void this.indexVault() });
+    this.addCommand({ id: 'rebuild-index', name: 'Rebuild index from scratch', callback: () => void this.indexVault(true) });
     this.addSettingTab(new VaneSettingsTab(this.app, this, this.settingsHost()));
     this.statusEl = this.addStatusBarItem();
     this.setStatus('starting');
