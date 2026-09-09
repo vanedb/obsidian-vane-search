@@ -12,6 +12,14 @@ export interface OpenAICompatConfig {
   queryPrefix?: string;
   docPrefix?: string;
   maxBatch?: number;
+  /**
+   * Cumulative-character budget per request (across all inputs in the batch),
+   * in addition to the count-based `maxBatch`. Each embedded input is now
+   * bounded (see MAX_EMBED_CHARS in the chunker, ~12000 chars), so a default
+   * of 96000 keeps ~8 inputs/request well under OpenAI's ~300k-token/request
+   * cap even for dense (CJK/Cyrillic) text.
+   */
+  maxBatchChars?: number;
 }
 
 export type EmbeddingFailure = {
@@ -53,16 +61,40 @@ export class OpenAICompatProvider implements EmbeddingProvider {
 
   dimension(): number { return this.cfg.dimension; }
   maxBatch(): number { return this.cfg.maxBatch ?? 32; }
+  maxBatchChars(): number { return this.cfg.maxBatchChars ?? 96000; }
 
   async embed(texts: string[], kind: 'query' | 'doc'): Promise<Float32Array[]> {
     const prefix = kind === 'query' ? (this.cfg.queryPrefix ?? '') : (this.cfg.docPrefix ?? '');
+    const prefixed = texts.map((t) => prefix + t);
     const out: Float32Array[] = [];
-    const size = this.maxBatch();
-    for (let i = 0; i < texts.length; i += size) {
-      const batch = texts.slice(i, i + size).map((t) => prefix + t);
+    for (const batch of this.splitIntoBatches(prefixed)) {
       out.push(...(await this.embedBatch(batch)));
     }
     return out;
+  }
+
+  /** Splits inputs into request-sized batches, bounded by count (maxBatch) AND
+   * cumulative characters (maxBatchChars). A single input larger than the char
+   * budget still gets its own request rather than being dropped or merged. */
+  private splitIntoBatches(inputs: string[]): string[][] {
+    const countLimit = this.maxBatch();
+    const charLimit = this.maxBatchChars();
+    const batches: string[][] = [];
+    let current: string[] = [];
+    let currentChars = 0;
+    for (const input of inputs) {
+      const wouldExceedCount = current.length >= countLimit;
+      const wouldExceedChars = current.length > 0 && currentChars + input.length > charLimit;
+      if (wouldExceedCount || wouldExceedChars) {
+        batches.push(current);
+        current = [];
+        currentChars = 0;
+      }
+      current.push(input);
+      currentChars += input.length;
+    }
+    if (current.length > 0) batches.push(current);
+    return batches;
   }
 
   private async embedBatch(input: string[]): Promise<Float32Array[]> {

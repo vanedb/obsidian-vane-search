@@ -45,6 +45,29 @@ describe('OpenAICompatProvider', () => {
     expect(out).toHaveLength(3);
   });
 
+  it('splits into more requests than maxBatch alone would when cumulative chars exceed maxBatchChars', async () => {
+    const post = okPost();
+    // maxBatch is generous (64) so count-based splitting alone would send everything
+    // in one request; maxBatchChars forces multiple requests instead.
+    const bigCfg = { ...cfg, maxBatch: 64, maxBatchChars: 25 };
+    const inputs = ['aaaaaaaaaa', 'bbbbbbbbbb', 'cccccccccc', 'dddddddddd', 'eeeeeeeeee']; // 10 chars each
+    const out = await new OpenAICompatProvider(bigCfg, post).embed(inputs, 'doc');
+    // budget 25 chars/request, each (prefixed) input ~ 10 + docPrefix len; expect several requests
+    expect((post as any).mock.calls.length).toBeGreaterThan(1);
+    expect(out).toHaveLength(inputs.length);
+
+    // order preserved: verify per-request input arrays concatenate back to the prefixed inputs in order
+    const sentInputs = (post as any).mock.calls.flatMap((c: any[]) => JSON.parse(c[1].body).input);
+    expect(sentInputs).toEqual(inputs.map((t) => cfg.docPrefix + t));
+
+    // a single input larger than the budget still goes alone in its own request
+    const soloCfg = { ...cfg, maxBatch: 64, maxBatchChars: 5 };
+    const post2 = okPost();
+    const out2 = await new OpenAICompatProvider(soloCfg, post2).embed(['short', 'this-one-is-long'], 'doc');
+    expect((post2 as any).mock.calls.length).toBe(2);
+    expect(out2).toHaveLength(2);
+  });
+
   it('reorders by response index (out-of-order server response is corrected)', async () => {
     const post: HttpPost = async (_u, init) => {
       const body = JSON.parse(init.body) as { input: string[] };
