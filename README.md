@@ -4,6 +4,33 @@ Semantic search for Obsidian vaults. It indexes your notes into a vector index
 that runs in-process via WebAssembly (VaneDB) and finds notes by meaning, not
 just keywords. No server, no daemon.
 
+## Installing
+
+- **Community store** (once listed): Settings → Community plugins → Browse →
+  search "Vane Search" → Install → Enable.
+- **BRAT** (before it's listed, or to track a beta): install the
+  [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin, then "Add beta
+  plugin" with `vanedb/obsidian-vane-search`. BRAT keeps it updated from releases.
+- **Manual**: download `main.js`, `manifest.json`, and `LICENSE` from a
+  [release](https://github.com/vanedb/obsidian-vane-search/releases) into
+  `<vault>/.obsidian/plugins/vane-search/`, then enable it under Community plugins.
+
+After enabling, set an embedding provider (below) before your first index.
+
+## Releasing (maintainers)
+
+Releases are cut by pushing a git tag that exactly matches `manifest.json`'s
+`version` (no leading `v`). Bump the version in `manifest.json`, `versions.json`,
+and `package.json`, commit, then:
+
+```bash
+git tag 1.2.3 && git push --follow-tags
+```
+
+The [`release` workflow](.github/workflows/release.yml) builds and publishes a
+GitHub Release with `main.js`, `manifest.json`, and `LICENSE` attached as
+individual assets — the layout Obsidian's installer and BRAT expect.
+
 ## Choosing an embedding provider
 
 Search quality comes from an embedding model. Vane Search talks to any

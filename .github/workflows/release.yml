@@ -1,0 +1,52 @@
+name: Release
+
+# Cut a release by pushing a tag that EXACTLY matches manifest.json's version
+# (Obsidian requires the tag to equal the version — no leading "v"):
+#   npm version patch --no-git-tag-version   # bump manifest.json + versions.json + package.json yourself
+#   git commit -am "release 1.2.3" && git tag 1.2.3 && git push --follow-tags
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Fail early if the pushed tag doesn't match manifest.json's version:
+      # Obsidian resolves a release by matching the tag to the manifest version.
+      - name: Verify tag matches manifest version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          if [ "$TAG" != "$MANIFEST_VERSION" ]; then
+            echo "::error::tag ($TAG) does not match manifest.json version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node scripts/check-size.mjs
+
+      # Attach the plugin files as INDIVIDUAL assets (not a zip) — this is what
+      # Obsidian's installer and BRAT download by tag.
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            main.js manifest.json LICENSE
