@@ -113,8 +113,29 @@ export async function runFullIndex(deps: {
       skipped++;
     }
 
+    // Reconcile stale occurrences: if this file now produces FEWER chunks than
+    // before (e.g. trimmed under the chunker's split threshold), the vanished
+    // occurrenceIds (path#1, path#2, …) are still LIVE in gen.idMap and would
+    // otherwise keep surfacing stale content forever. Any client.insert(...)
+    // for this file's changed chunks has already resolved by this point, so
+    // it's safe to mutate `gen` — same invariant Step 2 above follows.
+    const currentOccurrenceIds = new Set(chunks.map((c) => c.row.occurrenceId));
+    const prefix = `${f.path}#`;
+    const staleOccurrenceIds: string[] = [];
+    for (const [vaneIdStr, occ] of Object.entries(gen.idMap)) {
+      if (!occ.startsWith(prefix) || currentOccurrenceIds.has(occ)) continue;
+      const vaneId = Number(vaneIdStr);
+      gen.tombstones.push(vaneId);
+      delete gen.idMap[vaneId];
+      rev.delete(occ);
+      staleOccurrenceIds.push(occ);
+    }
+
     // Step 3: files row + generation record — the atomic "this file is indexed" commit.
-    const tx2 = db.transaction(['files', 'generations'], 'readwrite');
+    // Stale chunk rows are derived cache, but dropping them in the same transaction
+    // keeps the durable store consistent with the generation record in one commit.
+    const tx2 = db.transaction(['files', 'generations', 'chunks'], 'readwrite');
+    for (const occ of staleOccurrenceIds) tx2.objectStore('chunks').delete(occ);
     tx2.objectStore('files').put({
       path: f.path, mtime: f.mtime, size: f.size,
       contentHash: hash64(content), generation: gen.generation,

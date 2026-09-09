@@ -103,6 +103,38 @@ describe('runFullIndex', () => {
     expect(new Set(occ.slice(0, 2))).toEqual(new Set(['a/dup.md#0', 'b/dup.md#0']));
   });
 
+  it('a shrinking chunk count tombstones the orphaned occurrence and drops its chunk row', async () => {
+    const { db, source, client, gen } = await setup();
+    // Body well over MAX_EMBED_CHARS (12000): a filler run long enough that the
+    // marker text lands only in the SECOND chunk, never the first.
+    const filler = 'lorem ipsum '.repeat(1700); // 20400 chars
+    const marker = ' xylophone quokka narwhal';
+    source.set('big.md', filler + marker);
+    await runFullIndex({ db, source, provider, client, gen });
+
+    const liveForBig = Object.entries(gen.idMap).filter(([, occ]) => occ.startsWith('big.md#'));
+    expect(liveForBig.length).toBeGreaterThanOrEqual(2);
+    const id1 = Number(liveForBig.find(([, occ]) => occ === 'big.md#1')![0]);
+    expect(await searchOccurrences(client, gen, 'xylophone quokka narwhal')).toContain('big.md#1');
+
+    // Edit the note down to a single short chunk.
+    source.set('big.md', 'a short note about houseplants and watering schedule', 2);
+    const res = await runFullIndex({ db, source, provider, client, gen });
+    expect(res.indexed).toBe(1);
+
+    // The orphaned occurrence is gone from idMap, tombstoned, and its chunk row dropped.
+    expect(Object.values(gen.idMap)).not.toContain('big.md#1');
+    expect(gen.tombstones).toContain(id1);
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('big.md#1'))).toBeUndefined();
+
+    // The stale content no longer surfaces this note at all.
+    expect(await searchOccurrences(client, gen, 'xylophone quokka narwhal')).not.toContain('big.md#1');
+
+    // The surviving occurrence is live and searchable with the new content.
+    expect(Object.values(gen.idMap)).toContain('big.md#0');
+    expect((await searchOccurrences(client, gen, 'houseplants watering schedule'))[0]).toBe('big.md#0');
+  });
+
   it('a NEW generation re-indexes unchanged files (no stale mtime/size skip)', async () => {
     const { db, source, client, gen } = await setup();
     await runFullIndex({ db, source, provider, client, gen });
