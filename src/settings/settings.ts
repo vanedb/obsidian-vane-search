@@ -19,9 +19,11 @@ export interface Preset {
   queryPrefix: string; docPrefix: string; needsKey: boolean;
 }
 
-export const PRESETS: Record<'ollama' | 'openai' | 'custom', Preset> = {
-  ollama: { label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', model: 'nomic-embed-text', dimension: 768,
+export const PRESETS: Record<'ollama' | 'ollama-bge-m3' | 'openai' | 'custom', Preset> = {
+  ollama: { label: 'Ollama · nomic-embed-text (English)', baseUrl: 'http://localhost:11434/v1', model: 'nomic-embed-text', dimension: 768,
     queryPrefix: 'search_query: ', docPrefix: 'search_document: ', needsKey: false },
+  'ollama-bge-m3': { label: 'Ollama · bge-m3 (multilingual)', baseUrl: 'http://localhost:11434/v1', model: 'bge-m3', dimension: 1024,
+    queryPrefix: '', docPrefix: '', needsKey: false },
   openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimension: 1536,
     queryPrefix: '', docPrefix: '', needsKey: true },
   custom: { label: 'Custom (OpenAI-compatible)', baseUrl: 'http://localhost:11434/v1', model: 'nomic-embed-text', dimension: 768,

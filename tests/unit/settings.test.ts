@@ -19,6 +19,16 @@ describe('settings', () => {
     expect(PRESETS.ollama.dimension).toBe(768);
   });
 
+  it('the multilingual bge-m3 preset is available (local, 1024-dim, no prefixes/key)', () => {
+    const p = PRESETS['ollama-bge-m3'];
+    expect(p.baseUrl).toBe('http://localhost:11434/v1');
+    expect(p.model).toBe('bge-m3');
+    expect(p.dimension).toBe(1024);
+    expect(p.queryPrefix).toBe('');
+    expect(p.docPrefix).toBe('');
+    expect(p.needsKey).toBe(false);
+  });
+
   it('isLocalHost recognizes localhost and 127.0.0.1, rejects remote', () => {
     expect(isLocalHost('http://localhost:11434/v1')).toBe(true);
     expect(isLocalHost('http://127.0.0.1:1234/v1')).toBe(true);
