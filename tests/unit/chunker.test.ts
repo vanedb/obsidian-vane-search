@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chunkWholeFile, CHUNKER_VERSION } from '../../src/chunker/whole-file';
+import { chunkWholeFile, CHUNKER_VERSION, MAX_EMBED_CHARS } from '../../src/chunker/whole-file';
 
 describe('chunkWholeFile', () => {
   it('produces one chunk with title-prefixed embedded text', () => {
@@ -40,7 +40,50 @@ describe('chunkWholeFile', () => {
     expect(content.slice(c.row.offsets[0], c.row.offsets[1])).toBe('Body here');
   });
 
-  it('exports CHUNKER_VERSION 0', () => {
-    expect(CHUNKER_VERSION).toBe(0);
+  it('exports CHUNKER_VERSION 1', () => {
+    expect(CHUNKER_VERSION).toBe(1);
+  });
+
+  describe('bounded chunking of oversized notes', () => {
+    const path = 'notes/Huge.md';
+    const title = 'Huge';
+    // Non-periodic filler (each word is unique) so that windows never
+    // coincide textually — a naive periodic filler like 'x '.repeat(n) can
+    // produce byte-identical windows when the step aligns with the period,
+    // which would make the hash-uniqueness assertion below meaningless.
+    const bigBody = Array.from({ length: 20000 }, (_, i) => `word${i}`).join(' '); // far exceeds MAX_EMBED_CHARS
+
+    it('splits an oversized note into multiple contiguous chunks, all within budget', () => {
+      const chunks = chunkWholeFile(path, bigBody);
+      expect(chunks.length).toBeGreaterThan(1);
+
+      chunks.forEach((c, i) => {
+        expect(c.row.occurrenceId).toBe(`${path}#${i}`);
+        expect(c.embeddedText.length).toBeLessThanOrEqual(MAX_EMBED_CHARS);
+        expect(c.embeddedText.startsWith(`${title}\n\n`)).toBe(true);
+      });
+
+      // hashes differ across windows and are stable across calls
+      const hashes = chunks.map((c) => c.row.inputHash);
+      expect(new Set(hashes).size).toBe(hashes.length);
+      const chunks2 = chunkWholeFile(path, bigBody);
+      expect(chunks2.map((c) => c.row.inputHash)).toEqual(hashes);
+
+      // union of windows covers the whole body
+      const bodyOffset = chunks[0].row.offsets[0];
+      expect(chunks[0].row.offsets[0]).toBe(bodyOffset);
+      const last = chunks[chunks.length - 1];
+      expect(last.row.offsets[1]).toBe(bodyOffset + bigBody.trim().length);
+    });
+
+    it('offsets of a middle chunk slice the original content back to that window text', () => {
+      const content = bigBody;
+      const chunks = chunkWholeFile(path, content);
+      expect(chunks.length).toBeGreaterThan(2);
+      const mid = chunks[1];
+      const [start, end] = mid.row.offsets;
+      const windowText = content.slice(start, end);
+      expect(mid.embeddedText).toBe(`${title}\n\n${windowText}`);
+    });
   });
 });
