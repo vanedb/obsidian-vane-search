@@ -28,6 +28,7 @@ export const flatindex_add_batch: (a: number, b: number, c: number, d: number, e
 export const flatindex_contains: (a: number, b: any) => [number, number, number];
 export const flatindex_dimension: (a: number) => number;
 export const flatindex_get: (a: number, b: any) => [number, number, number, number];
+export const flatindex_get_vector: (a: number, b: any) => [number, number, number, number];
 export const flatindex_metric: (a: number) => [number, number];
 export const flatindex_new: (a: number, b: number, c: number) => [number, number, number];
 export const flatindex_remove: (a: number, b: any) => [number, number];

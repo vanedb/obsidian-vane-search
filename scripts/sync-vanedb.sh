@@ -1,19 +1,41 @@
 #!/usr/bin/env bash
-# scripts/sync-vanedb.sh — rebuild vanedb-wasm from source and vendor the pkg.
-# Requires the rustup toolchain: Homebrew rust shadows it and lacks the wasm32 target.
+# scripts/sync-vanedb.sh — vendor the vanedb wasm from the published npm package.
+#
+# Source of truth is the npm package @vanedb/wasm (web target). We vendor its
+# files into vendor/vanedb-wasm/ so esbuild can inline the raw .wasm into the
+# single main.js (the package's own exports map doesn't expose the raw .wasm for
+# a bundler to import, and its default loader fetches at runtime — neither works
+# for the plugin's inline, no-runtime-fetch, Blob-URL-worker architecture).
+#
+# No Rust toolchain required. Pin the version explicitly.
 set -euo pipefail
-VANEDB="${VANEDB_DIR:-$HOME/code/vanedb}"
-export PATH="$HOME/.cargo/bin:$PATH"
-(cd "$VANEDB/vanedb-wasm" && wasm-pack build --target web --release)
-mkdir -p vendor/vanedb-wasm
-rm -f vendor/vanedb-wasm/*
-for f in vanedb_wasm.js vanedb_wasm.d.ts vanedb_wasm_bg.wasm vanedb_wasm_bg.wasm.d.ts package.json LICENSE README.md; do
-  cp "$VANEDB/vanedb-wasm/pkg/$f" vendor/vanedb-wasm/
-done
-cat > vendor/vanedb-wasm/PROVENANCE <<EOF
-source: https://github.com/vanedb/vanedb
-commit: $(git -C "$VANEDB" rev-parse HEAD)
-built:  wasm-pack build --target web --release ($(date -u +%Y-%m-%dT%H:%M:%SZ))
-note:   regenerate with scripts/sync-vanedb.sh — do not edit by hand
+
+PKG_VERSION="${VANEDB_WASM_VERSION:-0.1.0}"
+DEST="vendor/vanedb-wasm"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+echo "fetching @vanedb/wasm@$PKG_VERSION from npm..."
+(cd "$WORK" && npm pack "@vanedb/wasm@$PKG_VERSION" >/dev/null 2>&1)
+tar -xzf "$WORK"/*.tgz -C "$WORK"
+
+# The web/ target is wasm-pack --target web: initSync + the ApproxIndex/
+# FlatIndex/SearchResults classes + the raw _bg.wasm the plugin inlines.
+mkdir -p "$DEST"
+rm -f "$DEST"/*
+cp "$WORK/package/web/vanedb_wasm.js"            "$DEST/"
+cp "$WORK/package/web/vanedb_wasm.d.ts"          "$DEST/"
+cp "$WORK/package/web/vanedb_wasm_bg.wasm"       "$DEST/"
+cp "$WORK/package/web/vanedb_wasm_bg.wasm.d.ts"  "$DEST/"
+cp "$WORK/package/LICENSE"                        "$DEST/" 2>/dev/null || true
+cp "$WORK/package/README.md"                      "$DEST/" 2>/dev/null || true
+
+cat > "$DEST/PROVENANCE" <<EOF
+source:  npm @vanedb/wasm@$PKG_VERSION (web target)
+built:   npm pack ($(date -u +%Y-%m-%dT%H:%M:%SZ))
+note:    regenerate with scripts/sync-vanedb.sh — do not edit by hand.
+         The plugin inlines vanedb_wasm_bg.wasm into main.js (esbuild binary
+         loader), so it runs offline with no runtime fetch. No Rust toolchain
+         needed; bump VANEDB_WASM_VERSION (or the default above) to update.
 EOF
-echo "vendored $(git -C "$VANEDB" rev-parse --short HEAD)"
+echo "vendored @vanedb/wasm@$PKG_VERSION"

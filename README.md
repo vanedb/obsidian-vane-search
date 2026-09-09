@@ -59,5 +59,8 @@ npm run build         # produces main.js
 ```
 
 `vendor/vanedb-wasm/` is a committed build of [vanedb](https://github.com/vanedb/vanedb)
-(see `vendor/vanedb-wasm/PROVENANCE`). Refresh it with `npm run sync-vanedb`
-(needs the rustup toolchain + wasm-pack; CI never does).
+(see `vendor/vanedb-wasm/PROVENANCE`). Refresh it with `npm run sync-vanedb`,
+which vendors the [`@vanedb/wasm`](https://www.npmjs.com/package/@vanedb/wasm)
+npm package (web target) — no Rust toolchain needed. Bump `VANEDB_WASM_VERSION`
+to update. The raw `.wasm` is inlined into `main.js` at build time, so the
+plugin runs offline with no runtime fetch.

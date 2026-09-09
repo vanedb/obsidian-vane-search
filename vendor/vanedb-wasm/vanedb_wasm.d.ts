@@ -107,7 +107,17 @@ export class FlatIndex {
     add_batch(ids: BigUint64Array, vectors: Float32Array): void;
     contains(id: bigint): boolean;
     dimension(): number;
+    /**
+     * The vector stored under `id`, as a `Float32Array`.
+     */
     get(id: bigint): Float32Array;
+    /**
+     * The same operation as `get`, under the spelling `ApproxIndex` also
+     * accepts. Both exist on both index types so a program is not tied to one
+     * (#85) — `ApproxIndex` had the pair and `FlatIndex` only `get`, so the
+     * one swap the pair exists for was the one that broke.
+     */
+    get_vector(id: bigint): Float32Array;
     /**
      * The metric this index was built with, in the spelling the constructor
      * accepts.
@@ -181,6 +191,7 @@ export interface InitOutput {
     readonly flatindex_contains: (a: number, b: any) => [number, number, number];
     readonly flatindex_dimension: (a: number) => number;
     readonly flatindex_get: (a: number, b: any) => [number, number, number, number];
+    readonly flatindex_get_vector: (a: number, b: any) => [number, number, number, number];
     readonly flatindex_metric: (a: number) => [number, number];
     readonly flatindex_new: (a: number, b: number, c: number) => [number, number, number];
     readonly flatindex_remove: (a: number, b: any) => [number, number];

@@ -311,11 +311,29 @@ export class FlatIndex {
         return ret >>> 0;
     }
     /**
+     * The vector stored under `id`, as a `Float32Array`.
      * @param {bigint} id
      * @returns {Float32Array}
      */
     get(id) {
         const ret = wasm.flatindex_get(this.__wbg_ptr, id);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * The same operation as `get`, under the spelling `ApproxIndex` also
+     * accepts. Both exist on both index types so a program is not tied to one
+     * (#85) — `ApproxIndex` had the pair and `FlatIndex` only `get`, so the
+     * one swap the pair exists for was the one that broke.
+     * @param {bigint} id
+     * @returns {Float32Array}
+     */
+    get_vector(id) {
+        const ret = wasm.flatindex_get_vector(this.__wbg_ptr, id);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }

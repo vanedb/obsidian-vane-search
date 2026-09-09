@@ -16,29 +16,35 @@ npm install /path/to/nodejs/vanedb-wasm-<version>-nodejs.tgz
 ```
 
 Then use `const { ApproxIndex } = require('vanedb-wasm')` in your application.
-For a browser, extract `web/vanedb-wasm-<version>-web.tgz` and serve its `package/`
-directory over HTTP. The browser example below works with the import changed
-to `./package/vanedb_wasm.js`.
+For a browser, extract `web/vanedb-wasm-<version>-web.tgz` and serve its
+`package/` directory over HTTP. The browser example below works with the import
+changed to `./package/vanedb_wasm.js`.
 
-Each tarball has a `.tgz.sha256` checksum sidecar. The target suffix distinguishes
-the downloadable assets; both retain the JavaScript package name `vanedb-wasm`.
+Each tarball has a `.tgz.sha256` checksum sidecar. **These two are the
+per-target development tarballs, and they import as `vanedb-wasm`** — the
+unscoped name wasm-pack gives its own output. The package published to npm is
+different: it merges both targets under `@vanedb/wasm`, described next. If you
+installed from npm, use that specifier; if you downloaded a `.tgz` from a
+release, use this one.
 
-To build from source, install Rust, the `wasm32-unknown-unknown` target, and
-`wasm-pack`. Node.js is needed for the Node example. Run from the repository root:
-
-The 0.1.0 release publishes `vanedb-wasm` to npm — one package serving both
-runtimes through conditional `exports`, so the same source works either way.
-Nothing is published yet; until then, build from a checkout as shown below.
-Once released:
+The 0.1.0 release publishes **`@vanedb/wasm`** to npm — one package serving
+both runtimes through conditional `exports`, so the same source works either
+way. The scope leaves room for a future native binding under `@vanedb/node`
+without competing for a bare name. Nothing is published yet; until then, build
+from a checkout as shown below. Once released:
 
 ```js
-import init, { FlatIndex } from 'vanedb-wasm';
+import init, { FlatIndex } from '@vanedb/wasm';
 
 await init();          // no-op under Node, loads the module in a browser
 const index = new FlatIndex(3, 'l2');
 ```
 
-`require('vanedb-wasm')` works too. To build from a checkout instead:
+`require('@vanedb/wasm')` works too.
+
+To build from source instead, install Rust, the `wasm32-unknown-unknown`
+target, and `wasm-pack`; Node.js is needed for the Node example. Run from the
+repository root:
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -85,8 +91,8 @@ back with `m()`, `ef_construction()`, `capacity()` and `seed()`. Set
 `index.ef_search` to trade search speed for recall.
 For exact search use `new FlatIndex(dimension, metric)`. It has the same
 surface minus the graph parameters: `add`, `add_batch`, `search`, `get`,
-`remove`, `contains`, `size()`, `metric()` and `dimension()`. The module also
-exports `version()`.
+`get_vector`, `remove`, `contains`, `size()`, `metric()` and `dimension()`. The
+module also exports `version()`.
 
 `ApproxIndex` supports the full delete lifecycle. `remove(id)` tombstones a
 vector: it stops appearing in results immediately, but keeps its graph links,
@@ -94,7 +100,7 @@ which may be the only route between live neighbourhoods. `tombstones()` counts
 what that has cost and `compact()` reclaims it — worth calling when churn has
 accumulated, since a browser is the most memory-constrained runtime this crate
 targets. `get(id)` and `get_vector(id)` read a stored vector back; both
-spellings exist so a program is not tied to one index type.
+spellings exist on both index types so a program is not tied to one.
 
 Not available in WebAssembly: persistence (`save`/`load`), disk mapping, and
 `upsert`.
