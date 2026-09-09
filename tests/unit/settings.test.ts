@@ -58,4 +58,32 @@ describe('settings', () => {
     expect(PRESETS.openai.needsKey).toBe(true);
     expect(PRESETS.openai.dimension).toBe(1536);
   });
+
+  it('providers differing only in query/doc prefixes must not collide (ollama vs custom preset)', () => {
+    // Concrete regression: PRESETS.ollama and PRESETS.custom share the same
+    // baseUrl/model/dimension and differ ONLY in queryPrefix/docPrefix. If the
+    // fingerprint ignores prefixes, switching between them silently skips
+    // re-embedding and the query/doc prefix mismatch corrupts ranking forever.
+    const post = (async () => ({ status: 200, json: {}, headers: {} })) as any;
+    const a = buildProvider({ ...DEFAULT_SETTINGS, ...PRESETS.ollama }, null, post);
+    const b = buildProvider({ ...DEFAULT_SETTINGS, ...PRESETS.custom }, null, post);
+    expect(PRESETS.ollama.baseUrl).toBe(PRESETS.custom.baseUrl);
+    expect(PRESETS.ollama.model).toBe(PRESETS.custom.model);
+    expect(PRESETS.ollama.dimension).toBe(PRESETS.custom.dimension);
+    expect(embeddingFingerprint(a, 0)).not.toBe(embeddingFingerprint(b, 0));
+  });
+
+  it('providers differing only in baseUrl path (same host) must not collide', () => {
+    const post = (async () => ({ status: 200, json: {}, headers: {} })) as any;
+    const a = buildProvider({ ...DEFAULT_SETTINGS, baseUrl: 'http://localhost:11434/v1' }, null, post);
+    const b = buildProvider({ ...DEFAULT_SETTINGS, baseUrl: 'http://localhost:11434/v2' }, null, post);
+    expect(embeddingFingerprint(a, 0)).not.toBe(embeddingFingerprint(b, 0));
+  });
+
+  it('identical settings produce identical fingerprints', () => {
+    const post = (async () => ({ status: 200, json: {}, headers: {} })) as any;
+    const a = buildProvider({ ...DEFAULT_SETTINGS, ...PRESETS.ollama }, null, post);
+    const b = buildProvider({ ...DEFAULT_SETTINGS, ...PRESETS.ollama }, null, post);
+    expect(embeddingFingerprint(a, 0)).toBe(embeddingFingerprint(b, 0));
+  });
 });

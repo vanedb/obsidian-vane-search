@@ -1,6 +1,7 @@
 import { OpenAICompatProvider } from '../providers/openai-compat';
 import type { HttpPost } from '../providers/http';
 import type { EmbeddingProvider } from '../providers/embedding-provider';
+import { hash64 } from '../hash';
 
 export interface VaneSettings {
   providerId: string;   // preset key: 'ollama' | 'openai' | 'custom'
@@ -57,8 +58,15 @@ export function providerIdFor(baseUrl: string): string {
 }
 
 export function buildProvider(settings: VaneSettings, apiKey: string | null, post: HttpPost): EmbeddingProvider {
+  // Fold the full baseUrl (not just host) and the query/doc prefixes into the
+  // id: they are part of embedding identity and MUST change the fingerprint,
+  // or switching between configs that share host/model/dimension but differ
+  // in prefixes silently skips re-embedding and corrupts ranking (see
+  // ollama vs. custom presets, which collide on host/model/dimension alone).
+  const identity = `${settings.baseUrl} ${settings.queryPrefix} ${settings.docPrefix}`;
+  const id = `${providerIdFor(settings.baseUrl)}:${hash64(identity).slice(0, 12)}`;
   return new OpenAICompatProvider({
-    id: providerIdFor(settings.baseUrl),
+    id,
     model: settings.model,
     dimension: settings.dimension,
     baseUrl: settings.baseUrl,
