@@ -103,6 +103,29 @@ describe('runFullIndex', () => {
     expect(new Set(occ.slice(0, 2))).toEqual(new Set(['a/dup.md#0', 'b/dup.md#0']));
   });
 
+  it('batches embedding requests across files instead of one call per file', async () => {
+    const { db, client, gen } = await setup();
+    const source = new MemoryFileSource();
+    for (let i = 0; i < 10; i++) source.set(`note-${i}.md`, `unique content number ${i} about topic ${i}`);
+    let embedCallCount = 0;
+    const countingCalls = new Proxy(provider, {
+      get(target, prop) {
+        if (prop === 'embed') {
+          return (texts: string[], kind: 'query' | 'doc') => { embedCallCount++; return target.embed(texts, kind); };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+    const res = await runFullIndex({ db, source, provider: countingCalls, client, gen });
+    expect(res).toEqual({ indexed: 10, skipped: 0 });
+    // The provider's own maxBatch/maxBatchChars splitting decides call count, not the
+    // file count — 10 files must NOT mean 10 embed() calls.
+    expect(embedCallCount).toBeLessThanOrEqual(2);
+    for (let i = 0; i < 10; i++) {
+      expect((await searchOccurrences(client, gen, `topic ${i}`))[0]).toBe(`note-${i}.md#0`);
+    }
+  });
+
   it('a shrinking chunk count tombstones the orphaned occurrence and drops its chunk row', async () => {
     const { db, source, client, gen } = await setup();
     // Body well over MAX_EMBED_CHARS (12000): a filler run long enough that the
