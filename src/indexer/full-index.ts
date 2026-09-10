@@ -2,7 +2,7 @@ import { getVectors, reqAsPromise, txDone, type FileRow, type VectorRow } from '
 import type { GenerationRecord } from '../storage/generation-store';
 import { embeddingFingerprint, type EmbeddingProvider } from '../providers/embedding-provider';
 import type { IndexClient } from '../index/index-client';
-import { chunkWholeFile, CHUNKER_VERSION, type ChunkRow } from '../chunker/whole-file';
+import { chunkNote, CHUNKER_VERSION, type ChunkRow } from '../chunker/chunker';
 import { hash64 } from '../hash';
 
 export interface FileMeta { path: string; mtime: number; size: number }
@@ -88,7 +88,7 @@ export async function runFullIndex(deps: {
       }
 
       const content = await source.read(f.path);
-      const chunks = chunkWholeFile(f.path, content);
+      const chunks = chunkNote(f.path, content);
       const changed: ChunkEntry[] = [];
       for (const c of chunks) {
         const oldRow = chunkRows.get(c.row.occurrenceId);

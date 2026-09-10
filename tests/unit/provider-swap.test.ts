@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_SETTINGS, buildProvider } from '../../src/settings/settings';
 import { embeddingFingerprint } from '../../src/providers/embedding-provider';
-import { CHUNKER_VERSION } from '../../src/chunker/whole-file';
+import { CHUNKER_VERSION } from '../../src/chunker/chunker';
 
 const post = (async () => ({ status: 200, json: {}, headers: {} })) as any;
 

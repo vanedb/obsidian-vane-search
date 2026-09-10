@@ -11,7 +11,7 @@ import { capacityFor } from './index/vane-index';
 import { embeddingFingerprint, type EmbeddingProvider } from './providers/embedding-provider';
 import { EmbeddingError } from './providers/openai-compat';
 import { requestUrlPost } from './providers/http';
-import { CHUNKER_VERSION, type ChunkRow } from './chunker/whole-file';
+import { CHUNKER_VERSION, type ChunkRow } from './chunker/chunker';
 import { runFullIndex, type FileSource } from './indexer/full-index';
 import { loadGenerationIntoIndex } from './indexer/load-generation';
 import { reconcileDeletions, removePaths } from './indexer/reconcile';

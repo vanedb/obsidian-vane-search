@@ -1,7 +1,7 @@
 import { ItemView, debounce } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { getVectors, reqAsPromise } from '../storage/vane-db';
-import type { ChunkRow } from '../chunker/whole-file';
+import type { ChunkRow } from '../chunker/chunker';
 import { l2Normalize } from '../providers/embedding-provider';
 import type { GenerationRecord } from '../storage/generation-store';
 import type { IndexClient } from '../index/index-client';
