@@ -117,7 +117,15 @@ export async function runFullIndex(deps: {
       // The generation check matters: after a provider/chunker change the new
       // generation starts empty, and a files row from the OLD generation must not
       // satisfy the skip even though mtime/size never moved.
-      if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size) {
+      // Belt-and-suspenders against generation-number collisions (e.g. a crashed full rebuild
+      // whose files-rows were stamped with a generation number a later build reuses): even
+      // when generation/mtime/size all match, only skip if this file actually has a LIVE
+      // mapping in the current `idMap` — a matching files-row with no live occurrence is
+      // exactly the collision case (or any other drift), and must be re-indexed instead of
+      // silently skipped.
+      const hasLiveMapping = (pathToVaneIds.get(f.path)?.size ?? 0) > 0;
+      if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size
+        && hasLiveMapping) {
         skipped++; deps.onProgress?.(++done, files.length); continue;
       }
 

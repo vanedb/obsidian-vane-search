@@ -33,6 +33,26 @@ export async function saveGeneration(db: IDBDatabase, rec: GenerationRecord): Pr
   await txDone(tx);
 }
 
+/**
+ * Next generation number to use for a new build, derived from the MAX generation number
+ * already present in the `generations` store (active OR building rows) — NOT from
+ * `(activeGeneration ?? 0) + 1`. That distinction matters for crash-safety: callers always
+ * `saveGeneration` the new `building` row BEFORE starting the build (see
+ * `buildGenerationInNewWorker` in main.ts), so if that build crashes, its (possibly partial)
+ * `building` row survives in the store. A naive "active + 1" retry would recompute the exact
+ * same number the crashed attempt used, and the crashed attempt's files-rows (stamped with
+ * that number) could then be misread by the retry's skip-check as already indexed — even
+ * though the retry's own in-memory generation never actually mapped them. Deriving from the
+ * store's own max instead means the retry always picks one past whatever the crashed attempt
+ * left behind, so its number is never reused. Empty store → 1.
+ */
+export async function nextGenerationNumber(db: IDBDatabase): Promise<number> {
+  const keys = await reqAsPromise<IDBValidKey[]>(
+    db.transaction('generations').objectStore('generations').getAllKeys());
+  const max = keys.reduce((a: number, b) => Math.max(a, Number(b)), 0);
+  return max + 1;
+}
+
 export async function loadActiveGeneration(db: IDBDatabase): Promise<GenerationRecord | null> {
   const all = await reqAsPromise<GenerationRecord[]>(
     db.transaction('generations').objectStore('generations').getAll());

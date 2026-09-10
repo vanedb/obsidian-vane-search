@@ -2,7 +2,7 @@
 import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon, type Debouncer } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
-  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
+  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, nextGenerationNumber,
   type GenerationRecord,
 } from './storage/generation-store';
 import { IndexClient, workerTransport } from './index/index-client';
@@ -430,7 +430,11 @@ export default class VaneSearchPlugin extends Plugin {
           // OLD `this.gen` keep serving search. Only on success do we activate + swap; on any
           // failure the old worker/gen/client are untouched, so a failed rebuild leaves the
           // plugin exactly as it was.
-          const buildGen = newGeneration((this.gen?.generation ?? 0) + 1,
+          // Derived from the store's own max generation number (see nextGenerationNumber's
+          // doc comment), not `this.gen.generation + 1` — saveGeneration below persists this
+          // row BEFORE the build starts, so a crashed attempt's `building` row survives and a
+          // retry's nextGenerationNumber() picks one past it, never reusing this attempt's number.
+          const buildGen = newGeneration(await nextGenerationNumber(this.db!),
             { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
           await saveGeneration(this.db!, buildGen);
 

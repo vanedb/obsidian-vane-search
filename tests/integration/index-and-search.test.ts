@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initWasm } from '../helpers/wasm';
 import { loopbackTransport } from '../helpers/loopback';
 import { MemoryFileSource } from '../helpers/memory-files';
-import { openVaneDb, reqAsPromise, txDone } from '../../src/storage/vane-db';
+import { openVaneDb, reqAsPromise, txDone, type FileRow } from '../../src/storage/vane-db';
 import {
   newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, type GenerationRecord,
 } from '../../src/storage/generation-store';
@@ -322,6 +322,47 @@ describe('deferGenerationCommit', () => {
     await activateGeneration(db, gen); // state: 'active'
     await expect(runFullIndex({ db, source, provider, client, gen, deferGenerationCommit: true }))
       .rejects.toThrow(/deferGenerationCommit is only valid for a building generation/);
+  });
+});
+
+describe('crash-collision skip guard (idMap-presence in the skip-check)', () => {
+  it('a files-row matching generation+mtime+size but with NO live idMap mapping is re-indexed, not skipped', async () => {
+    const db = await openVaneDb(`collision-${n++}`);
+    const source = new MemoryFileSource();
+    source.set('coffee.md', 'v60 pourover brewing ratios and grind size');
+    const client = freshClient();
+    await client.init(64, capacityFor(100));
+
+    // Simulate the aftermath of a crashed full rebuild whose generation number got reused: a
+    // files-row committed under generation 2 (e.g. via deferGenerationCommit, which writes the
+    // files row per file without a matching per-file gen commit), but the crashed attempt's own
+    // 'building' generation 2 never activated — so THIS run's fresh `gen` (also numbered 2, the
+    // exact collision `nextGenerationNumber` now prevents at the main.ts level) starts with an
+    // EMPTY idMap: no live mapping for coffee.md, even though the files-row claims it's already
+    // indexed under this exact generation/mtime/size.
+    const f = source.list()[0];
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put({
+      path: 'coffee.md', mtime: f.mtime, size: f.size, contentHash: 'stale-from-crashed-attempt', generation: 2,
+    } satisfies FileRow);
+    await txDone(tx);
+
+    const gen = newGeneration(2, { embeddingFingerprint: FP, graphFingerprint: GRAPH_FP, dim: 64 });
+    await saveGeneration(db, gen); // empty idMap — this run's own fresh generation
+
+    const res = await runFullIndex({ db, source, provider, client, gen });
+    expect(res).toEqual({ indexed: 1, skipped: 0 }); // NOT skipped despite the matching files-row
+    expect(Object.values(gen.idMap)).toContain('coffee.md#0');
+    expect((await searchOccurrences(client, gen, 'pourover brewing ratios grind size'))[0]).toBe('coffee.md#0');
+  });
+
+  it('does not disturb the normal incremental skip: a genuinely-mapped unchanged file still skips', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    const before = gen.nextVaneId;
+    const res = await runFullIndex({ db, source, provider, client, gen }); // unchanged, all 3 files genuinely mapped
+    expect(res).toEqual({ indexed: 0, skipped: 3 });
+    expect(gen.nextVaneId).toBe(before);
   });
 });
 
