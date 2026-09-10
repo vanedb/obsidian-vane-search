@@ -87,6 +87,42 @@ describe('chunkNote', () => {
     expect(chunks[0].row.occurrenceId).toBe('n.md#0');
   });
 
+  it('a `#`-prefixed line inside a fenced code block is not treated as a heading', () => {
+    const content = [
+      '# Section',
+      'Intro to the script.',
+      '',
+      '```bash',
+      '# not a heading',
+      'echo hi',
+      '```',
+      '',
+      'More prose after the code block.',
+      '',
+      '# Next Section',
+      'Real next section text.',
+    ].join('\n');
+    const chunks = chunkNote('n.md', content);
+
+    // Exactly two sections: "Section" (covering the fenced block and the
+    // prose after it) and "Next Section" — the shell comment did not split
+    // anything, and no breadcrumb was derived from it.
+    expect(chunks.map((c) => c.row.breadcrumb)).toEqual([
+      'n > Section',
+      'n > Next Section',
+    ]);
+    for (const c of chunks) {
+      expect(c.row.breadcrumb).not.toContain('not a heading');
+    }
+
+    // The fenced code block stays intact inside the first chunk, unsplit.
+    expect(chunks[0].embeddedText).toContain('```bash\n# not a heading\necho hi\n```');
+    expect(chunks[0].embeddedText).toContain('More prose after the code block.');
+
+    // A real heading after the closed fence still splits normally.
+    expect(chunks[1].embeddedText).toBe('n > Next Section\n\n# Next Section\nReal next section text.');
+  });
+
   it('hash is stable across calls and changes with content OR breadcrumb', () => {
     const a = chunkNote('a.md', 'same')[0].row.inputHash;
     expect(chunkNote('a.md', 'same')[0].row.inputHash).toBe(a);

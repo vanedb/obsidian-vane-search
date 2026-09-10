@@ -30,6 +30,10 @@ const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 // dividers and horizontal rules, and ATX covers the overwhelming majority of
 // real notes.
 const ATX_HEADING = /^(#{1,6}) (.*)$/;
+// Fenced code block delimiter: 3+ backticks or tildes, optionally indented.
+// A simple open/close toggle — info-strings and nesting are deliberately not
+// modeled, matching the "no markdown library" constraint.
+const CODE_FENCE = /^\s*(`{3,}|~{3,})/;
 
 /** Split `text` into lines, each tagged with its start offset within `text`. */
 function splitLines(text: string): { text: string; start: number }[] {
@@ -69,10 +73,17 @@ interface Section {
  * the stack to depth n-1, then pushes the new heading text.
  */
 function splitSections(title: string, body: string): Section[] {
-  const headings = splitLines(body)
-    .map((l) => ({ m: ATX_HEADING.exec(l.text), start: l.start }))
-    .filter((h): h is { m: RegExpExecArray; start: number } => h.m !== null)
-    .map((h) => ({ level: h.m[1].length, text: h.m[2].trim(), start: h.start }));
+  const headings: { level: number; text: string; start: number }[] = [];
+  let inFence = false;
+  for (const line of splitLines(body)) {
+    // Toggle on any fence delimiter line (``` or ~~~, 3+ chars) — while inside
+    // a fenced code block, a `#`-prefixed line (shell/Python/YAML comment,
+    // markdown example) is content, never a heading.
+    if (CODE_FENCE.test(line.text)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = ATX_HEADING.exec(line.text);
+    if (m) headings.push({ level: m[1].length, text: m[2].trim(), start: line.start });
+  }
 
   const sections: Section[] = [];
 
