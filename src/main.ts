@@ -1,5 +1,5 @@
 // src/main.ts
-import { Notice, Plugin, TFile, requestUrl, setIcon } from 'obsidian';
+import { Editor, Notice, Plugin, TFile, requestUrl, setIcon } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
   newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
@@ -49,6 +49,11 @@ export default class VaneSearchPlugin extends Plugin {
     this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => this.openSearch() });
     this.addCommand({ id: 'index-vault', name: 'Index new and changed notes', callback: () => void this.indexVault() });
     this.addCommand({ id: 'rebuild-index', name: 'Rebuild index from scratch', callback: () => void this.indexVault(true) });
+    this.addCommand({
+      id: 'search-selection',
+      name: 'Find notes similar to selection',
+      editorCallback: (editor: Editor) => this.searchSelection(editor),
+    });
     this.addSettingTab(new VaneSettingsTab(this.app, this, this.settingsHost()));
     this.addRibbonIcon('search', 'Vane Search: search vault', () => this.openSearch());
     this.statusEl = this.addStatusBarItem();
@@ -133,6 +138,13 @@ export default class VaneSearchPlugin extends Plugin {
   private openSearch() {
     if (!this.search) { new Notice('Vane Search is still starting'); return; }
     new VaneSearchModal(this.app, this.search, () => this.status).open();
+  }
+
+  private searchSelection(editor: Editor) {
+    const selection = editor.getSelection();
+    if (!selection.trim()) { new Notice('Vane Search: select some text first'); return; }
+    if (!this.search) { new Notice('Vane Search is still starting'); return; }
+    new VaneSearchModal(this.app, this.search, () => this.status, selection).open();
   }
 
   private vaultId(): string {

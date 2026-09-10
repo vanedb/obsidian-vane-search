@@ -20,9 +20,19 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
   private gate = new RequestGate();
   private last: SearchResult[] = [];
 
-  constructor(app: App, private svc: SearchService, private indexStatus: () => string) {
+  constructor(app: App, private svc: SearchService, private indexStatus: () => string, private initialQuery?: string) {
     super(app);
     this.setPlaceholder('Semantic search…');
+  }
+
+  onOpen(): void {
+    super.onOpen();
+    // Pre-seed and run a query (e.g. from "Find notes similar to selection") — SuggestModal wires
+    // its 'input' listener during super.onOpen(), so dispatching after it fires the search.
+    if (this.initialQuery) {
+      this.inputEl.value = this.initialQuery;
+      this.inputEl.dispatchEvent(new Event('input'));
+    }
   }
 
   async getSuggestions(query: string): Promise<SearchResult[]> {
@@ -77,12 +87,13 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
     if (r.preview) el.createEl('small', { cls: 'vane-search-preview', text: r.preview });
   }
 
-  onChooseSuggestion(r: SearchResult): void {
+  onChooseSuggestion(r: SearchResult, evt: MouseEvent | KeyboardEvent): void {
     const af = this.app.vault.getAbstractFileByPath(r.path);
     if (!(af instanceof TFile)) {
       new Notice('Vane Search: that note no longer exists — run "Rebuild index from scratch"');
       return;
     }
-    void this.app.workspace.openLinkText(r.path, '', false);
+    const newLeaf = !!(evt && (evt.metaKey || evt.ctrlKey));
+    void this.app.workspace.openLinkText(r.path, '', newLeaf);
   }
 }
