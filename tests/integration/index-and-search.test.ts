@@ -156,6 +156,12 @@ describe('runFullIndex', () => {
     // The surviving occurrence is live and searchable with the new content.
     expect(Object.values(gen.idMap)).toContain('big.md#0');
     expect((await searchOccurrences(client, gen, 'houseplants watering schedule'))[0]).toBe('big.md#0');
+
+    // The path→vaneIds reconcile index scopes the scan to big.md only — the other setup
+    // files' occurrences must be completely untouched by the reconcile pass above.
+    expect(Object.values(gen.idMap)).toEqual(
+      expect.arrayContaining(['coffee.md#0', 'k8s.md#0', 'bread.md#0', 'big.md#0']));
+    expect(Object.values(gen.idMap)).toHaveLength(4);
   });
 
   it('a NEW generation re-indexes unchanged files (no stale mtime/size skip)', async () => {

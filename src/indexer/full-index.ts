@@ -68,7 +68,25 @@ export async function runFullIndex(deps: {
     (await reqAsPromise<ChunkRow[]>(db.transaction('chunks').objectStore('chunks').getAll())).map((r) => [r.occurrenceId, r]),
   );
   const rev = new Map<string, number>(); // occurrenceId → vaneId
-  for (const [vid, occ] of Object.entries(gen.idMap)) rev.set(occ, Number(vid));
+  // path → vaneIds occurring under it, kept in sync with gen.idMap/rev everywhere they're
+  // mutated below. Turns the per-file "which of this file's occurrences vanished?" reconcile
+  // scan from O(whole idMap) into O(this file's own occurrences).
+  const pathToVaneIds = new Map<string, Set<number>>();
+  const occPath = (occ: string) => occ.slice(0, occ.lastIndexOf('#'));
+  const indexOcc = (occ: string, vaneId: number) => {
+    const path = occPath(occ);
+    let set = pathToVaneIds.get(path);
+    if (!set) { set = new Set(); pathToVaneIds.set(path, set); }
+    set.add(vaneId);
+  };
+  const unindexOcc = (occ: string, vaneId: number) => {
+    const path = occPath(occ);
+    const set = pathToVaneIds.get(path);
+    if (!set) return;
+    set.delete(vaneId);
+    if (set.size === 0) pathToVaneIds.delete(path);
+  };
+  for (const [vid, occ] of Object.entries(gen.idMap)) { rev.set(occ, Number(vid)); indexOcc(occ, Number(vid)); }
 
   let indexed = 0, skipped = 0, done = 0;
 
@@ -157,14 +175,16 @@ export async function runFullIndex(deps: {
         await client.insert(entries);
 
         // Only now — insert succeeded — apply the tombstones, idMap changes, and the
-        // id counter advance, both in `gen` and in the local `rev` map.
+        // id counter advance, both in `gen` and in the local `rev`/`pathToVaneIds` maps.
         for (const { old, vaneId, occurrenceId } of planned) {
           if (old !== undefined) {
             gen.tombstones.push(old);
             delete gen.idMap[old];
+            unindexOcc(occurrenceId, old); // same occurrenceId as the new entry — same path
           }
           gen.idMap[vaneId] = occurrenceId;
           rev.set(occurrenceId, vaneId);
+          indexOcc(occurrenceId, vaneId);
         }
         gen.nextVaneId = nextId;
         indexed++;
@@ -179,15 +199,19 @@ export async function runFullIndex(deps: {
       // for this file's changed chunks has already resolved by this point, so
       // it's safe to mutate `gen` — same invariant Step 2 above follows.
       const currentOccurrenceIds = new Set(chunks.map((c) => c.row.occurrenceId));
-      const prefix = `${f.path}#`;
       const staleOccurrenceIds: string[] = [];
-      for (const [vaneIdStr, occ] of Object.entries(gen.idMap)) {
-        if (!occ.startsWith(prefix) || currentOccurrenceIds.has(occ)) continue;
-        const vaneId = Number(vaneIdStr);
-        gen.tombstones.push(vaneId);
-        delete gen.idMap[vaneId];
-        rev.delete(occ);
-        staleOccurrenceIds.push(occ);
+      // Only this file's own vaneIds (via pathToVaneIds) instead of a full idMap scan.
+      const candidateVaneIds = pathToVaneIds.get(f.path);
+      if (candidateVaneIds) {
+        for (const vaneId of [...candidateVaneIds]) {
+          const occ = gen.idMap[vaneId];
+          if (occ === undefined || currentOccurrenceIds.has(occ)) continue;
+          gen.tombstones.push(vaneId);
+          delete gen.idMap[vaneId];
+          rev.delete(occ);
+          unindexOcc(occ, vaneId);
+          staleOccurrenceIds.push(occ);
+        }
       }
 
       // Step 3: files row + generation record — the atomic "this file is indexed" commit.
