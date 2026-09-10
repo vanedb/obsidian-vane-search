@@ -1,5 +1,5 @@
 // src/main.ts
-import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon, type Debouncer } from 'obsidian';
+import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
   newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, nextGenerationNumber,
@@ -21,6 +21,8 @@ import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui
 import { DEFAULT_SETTINGS, buildProvider, isLocalHost, type VaneSettings } from './settings/settings';
 import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
 import { ConsentModal, needsConsent } from './ui/consent-modal';
+import { SerialQueue } from './lifecycle/serial-queue';
+import { PathScheduler } from './lifecycle/path-scheduler';
 
 const GRAPH_FINGERPRINT = 'dot:m16:ef200'; // bump on metric/params/vanedb format change
 const LIVE_DEBOUNCE_MS = 1500; // coalesce rapid edits/create bursts per path
@@ -44,9 +46,20 @@ export default class VaneSearchPlugin extends Plugin {
   private indexReady = false;
   private initDone: Promise<void> = Promise.resolve();
   /** Single serialization point: every reconcile/reindex — manual command or live vault
-   *  event — runs as one link in this chain, so none of them ever overlap. */
-  private work: Promise<void> = Promise.resolve();
-  private pathDebouncers = new Map<string, Debouncer<[], void>>();
+   *  event — runs as one link in this queue, so none of them ever overlap. Never rejects:
+   *  a failed op logs + surfaces a Notice/status and the next op still runs. */
+  private queue = new SerialQueue((e) => {
+    console.error('vane-search: background sync failed', e);
+    if (!this.unloaded) {
+      this.setStatus('sync failed — see console');
+      new Notice('Vane Search: keeping the index in sync failed — see the developer console.');
+    }
+  });
+  /** Per-path debounced live reindex; self-prunes fired entries so the map can't leak. */
+  private scheduler = new PathScheduler(
+    (fn) => { const d = debounce(fn, LIVE_DEBOUNCE_MS, true); return { trigger: () => d(), cancel: () => { d.cancel(); } }; },
+    (path) => { void this.enqueue(() => this.reindexFile(path)); },
+  );
 
   async onload() {
     await this.loadSettings();
@@ -85,8 +98,7 @@ export default class VaneSearchPlugin extends Plugin {
 
   onunload() {
     this.unloaded = true;
-    for (const d of this.pathDebouncers.values()) d.cancel();
-    this.pathDebouncers.clear();
+    this.scheduler.cancelAll();
     this.app.workspace.detachLeavesOfType(RELATED_VIEW_TYPE);
     this.worker?.terminate();
     this.db?.close();
@@ -205,19 +217,11 @@ export default class VaneSearchPlugin extends Plugin {
     };
   }
 
-  /** Serializes `op` after every previously-enqueued op. Never rejects: an error here is
-   *  the failure mode for the whole live-sync path (manual "Index vault"/"Rebuild" keep
-   *  their own try/catch for richer messaging), so this is the catch-all — log, surface a
-   *  Notice + status, keep the chain alive for the next op. */
+  /** Serializes `op` after every previously-enqueued op via the shared queue.
+   *  Never rejects — see SerialQueue. Kept as a thin method so the many call
+   *  sites (live events, manual index) read `this.enqueue(...)`. */
   private enqueue(op: () => Promise<void>): Promise<void> {
-    this.work = this.work.then(op).catch((e) => {
-      console.error('vane-search: background sync failed', e);
-      if (!this.unloaded) {
-        this.setStatus('sync failed — see console');
-        new Notice('Vane Search: keeping the index in sync failed — see the developer console.');
-      }
-    });
-    return this.work;
+    return this.queue.enqueue(op);
   }
 
   /** Re-embeds/tombstones exactly one file via the same `runFullIndex` used for the full
@@ -253,21 +257,12 @@ export default class VaneSearchPlugin extends Plugin {
 
   private scheduleReindex(path: string) {
     if (this.unloaded) return;
-    let d = this.pathDebouncers.get(path);
-    if (!d) {
-      d = debounce(() => {
-        this.pathDebouncers.delete(path); // debounce fired — don't keep this entry around forever
-        void this.enqueue(() => this.reindexFile(path));
-      }, LIVE_DEBOUNCE_MS, true);
-      this.pathDebouncers.set(path, d);
-    }
-    d();
+    this.scheduler.schedule(path);
   }
 
   private scheduleRemove(path: string) {
     if (this.unloaded) return;
-    this.pathDebouncers.get(path)?.cancel();
-    this.pathDebouncers.delete(path);
+    this.scheduler.cancel(path); // drop any pending reindex for this path — it's gone
     void this.enqueue(() => this.removePath(path));
   }
 
