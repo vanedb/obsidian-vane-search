@@ -12,7 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "@vanedb/wasm": "0.1.0-rc.2",
+    "@vanedb/wasm": "0.1.1",
     "esbuild": "^0.24.0",
     "fake-indexeddb": "^6.0.0",
     "obsidian": "^1.8.7",
