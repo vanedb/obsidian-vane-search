@@ -1,4 +1,4 @@
-import { App, SuggestModal, TFile } from 'obsidian';
+import { App, Notice, SuggestModal, TFile } from 'obsidian';
 import { ProviderMismatchError, type SearchService, type NoteResult } from '../search/search-service';
 import { RequestGate } from './request-gate';
 
@@ -43,10 +43,16 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
       return [];
     }
     if (!this.gate.isCurrent(token)) return this.last;
-    // Attach a short preview per result (capped to the results shown, i.e. the search limit).
-    const withPreviews: SearchResult[] = await Promise.all(
-      results.map(async (r) => ({ ...r, preview: await this.loadPreview(r.path) }))
-    );
+    // Attach a short preview per result (capped to the results shown, i.e. the search limit), and
+    // drop results whose file no longer exists — the index can still hold deleted-but-not-yet-
+    // reconciled notes (deferred to a later phase), and those must never surface in the UI.
+    const withPreviews = (await Promise.all(
+      results.map(async (r): Promise<SearchResult | undefined> => {
+        const af = this.app.vault.getAbstractFileByPath(r.path);
+        if (!(af instanceof TFile)) return undefined;
+        return { ...r, preview: await this.loadPreview(af) };
+      })
+    )).filter((r): r is SearchResult => r !== undefined);
     if (!this.gate.isCurrent(token)) return this.last;
     this.last = withPreviews;
     this.emptyStateText = withPreviews.length ? '' : `No results — ${this.indexStatus()}`;
@@ -54,14 +60,12 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
   }
 
   /** Best-effort snippet read — a missing/paused/unreadable file must never break search. */
-  private async loadPreview(path: string): Promise<string | undefined> {
+  private async loadPreview(file: TFile): Promise<string | undefined> {
     try {
-      const af = this.app.vault.getAbstractFileByPath(path);
-      if (!(af instanceof TFile)) return undefined;
-      const text = await this.app.vault.cachedRead(af);
+      const text = await this.app.vault.cachedRead(file);
       return extractPreview(text) || undefined;
     } catch (e) {
-      console.debug('vane-search: preview read failed', path, e);
+      console.debug('vane-search: preview read failed', file.path, e);
       return undefined;
     }
   }
@@ -74,6 +78,11 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
   }
 
   onChooseSuggestion(r: SearchResult): void {
+    const af = this.app.vault.getAbstractFileByPath(r.path);
+    if (!(af instanceof TFile)) {
+      new Notice('Vane Search: that note no longer exists — run "Rebuild index from scratch"');
+      return;
+    }
     void this.app.workspace.openLinkText(r.path, '', false);
   }
 }
