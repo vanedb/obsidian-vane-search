@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initWasm } from '../helpers/wasm';
-import { ApproxIndex } from '../../vendor/vanedb-wasm/vanedb_wasm.js';
+import { ApproxIndex } from '@vanedb/wasm';
 
 // Pins the vanedb contract the whole plugin relies on. If vanedb changes
 // semantics, THIS test fails — not a silently inverted ranking in the UI.
@@ -8,7 +8,7 @@ import { ApproxIndex } from '../../vendor/vanedb-wasm/vanedb_wasm.js';
 // vanedb-wasm's ApproxIndex.search() returns a SearchResults object with
 // `ids` (BigUint64Array, rank order) and `distances` (Float32Array, ascending).
 // Metric 'dot' reports distance = -(dot product), so score = -distance.
-describe('vendored vanedb-wasm contract', () => {
+describe('@vanedb/wasm contract', () => {
   beforeAll(() => initWasm());
 
   const unit = (...xs: number[]) => {
