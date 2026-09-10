@@ -1,8 +1,8 @@
 import { getVectors, reqAsPromise, txDone, type FileRow, type VectorRow } from '../storage/vane-db';
 import type { GenerationRecord } from '../storage/generation-store';
-import type { EmbeddingProvider } from '../providers/embedding-provider';
+import { embeddingFingerprint, type EmbeddingProvider } from '../providers/embedding-provider';
 import type { IndexClient } from '../index/index-client';
-import { chunkWholeFile, type ChunkRow } from '../chunker/whole-file';
+import { chunkWholeFile, CHUNKER_VERSION, type ChunkRow } from '../chunker/whole-file';
 import { hash64 } from '../hash';
 
 export interface FileMeta { path: string; mtime: number; size: number }
@@ -47,6 +47,17 @@ export async function runFullIndex(deps: {
   onProgress?: (done: number, total: number) => void;
 }): Promise<{ indexed: number; skipped: number }> {
   const { db, source, provider, client, gen } = deps;
+
+  // Backstop against writing a vector row keyed by `gen.embeddingFingerprint` that was
+  // actually produced by a DIFFERENT provider (e.g. the live single-file reindex path
+  // runs whatever `this.provider` currently is, which can drift from `this.gen` if the
+  // user switches provider without clicking "Rebuild"). Every caller gets this for free —
+  // the manual index path never trips it because it rebuilds `gen` to match first.
+  const providerFp = embeddingFingerprint(provider, CHUNKER_VERSION);
+  if (providerFp !== gen.embeddingFingerprint) {
+    throw new Error('Vane Search: provider/generation fingerprint mismatch — rebuild the index');
+  }
+
   const files = source.list();
   const fileRows = new Map<string, FileRow>(
     (await reqAsPromise<FileRow[]>(db.transaction('files').objectStore('files').getAll())).map((r) => [r.path, r]),

@@ -223,6 +223,12 @@ export default class VaneSearchPlugin extends Plugin {
    *  vault index — no separate per-file indexer, just a FileSource that lists one path. */
   private async reindexFile(path: string) {
     if (this.unloaded || !this.indexReady || !this.db || !this.client || !this.gen) return;
+    // Provider switched (e.g. new API key) without a "Rebuild" — expected, not an error:
+    // the stale generation keeps serving search (already gated by ProviderMismatchError),
+    // so quietly skip live reindexing rather than throwing/Notice-ing on every edit.
+    // runFullIndex itself refuses this combination too (belt-and-suspenders); this check
+    // just keeps that from surfacing as a scary "sync failed" Notice.
+    if (embeddingFingerprint(this.provider, CHUNKER_VERSION) !== this.gen.embeddingFingerprint) return;
     const af = this.app.vault.getAbstractFileByPath(path);
     if (!(af instanceof TFile)) return; // gone already — the delete/rename handler owns this path now
     await runFullIndex({
