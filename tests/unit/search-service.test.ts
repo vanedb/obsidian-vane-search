@@ -65,6 +65,19 @@ describe('SearchService', () => {
     expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
   });
 
+  it('applies a live floor via getFloor, re-read on every search', async () => {
+    const { client } = cannedClient([{ vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.1 }], 2);
+    const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
+    let floor = 0.5;
+    const svc = new SearchService({
+      getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen,
+      getFloor: () => floor,
+    });
+    expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
+    floor = 0; // simulate a settings change taking effect on the next search
+    expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md', 'b.md']);
+  });
+
   it('returns [] when no generation is loaded', async () => {
     const { client } = cannedClient([], 0);
     const svc = new SearchService({ getProvider: () => provider, client, resolve: () => undefined, getGen: () => null });

@@ -24,7 +24,10 @@ export class SearchService {
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
     getGen: () => GenerationRecord | null;
     getProviderFingerprint?: () => string | null;
+    /** Static floor (legacy / tests). Prefer getFloor for a value that can change at runtime. */
     floor?: number;
+    /** Live accessor for the similarity floor — read on every search, so a settings change takes effect immediately. Takes precedence over `floor` when set. */
+    getFloor?: () => number;
   }) {}
 
   async search(query: string, limit = 20): Promise<NoteResult[]> {
@@ -40,7 +43,7 @@ export class SearchService {
     }
     const [qv] = await this.deps.getProvider().embed([query], 'query');
     const tombstones = new Set(gen.tombstones);
-    const floor = this.deps.floor ?? -Infinity;
+    const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
 
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
     let k = FIRST_K;

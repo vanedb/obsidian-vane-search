@@ -1,5 +1,5 @@
 // src/main.ts
-import { Notice, Plugin, TFile, requestUrl } from 'obsidian';
+import { Notice, Plugin, TFile, requestUrl, setIcon } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
   newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
@@ -35,6 +35,7 @@ export default class VaneSearchPlugin extends Plugin {
   private search: SearchService | null = null;
   private status = 'starting';
   private statusEl: HTMLElement | null = null;
+  private statusTextEl: HTMLElement | null = null;
   private indexing = false;
   private unloaded = false;
   private indexReady = false;
@@ -45,14 +46,16 @@ export default class VaneSearchPlugin extends Plugin {
     this.provider = this.makeProvider();
 
     // Light onload (spec): commands only; real init after layout is ready.
-    this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => {
-      if (!this.search) { new Notice('Vane Search is still starting'); return; }
-      new VaneSearchModal(this.app, this.search, () => this.status).open();
-    }});
+    this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => this.openSearch() });
     this.addCommand({ id: 'index-vault', name: 'Index new and changed notes', callback: () => void this.indexVault() });
     this.addCommand({ id: 'rebuild-index', name: 'Rebuild index from scratch', callback: () => void this.indexVault(true) });
     this.addSettingTab(new VaneSettingsTab(this.app, this, this.settingsHost()));
+    this.addRibbonIcon('search', 'Vane Search: search vault', () => this.openSearch());
     this.statusEl = this.addStatusBarItem();
+    this.statusEl.addClass('mod-clickable');
+    setIcon(this.statusEl.createSpan({ cls: 'vane-status-icon' }), 'search');
+    this.statusTextEl = this.statusEl.createSpan({ cls: 'vane-status-text' });
+    this.statusEl.onClickEvent(() => this.openSearch());
     this.setStatus('starting');
     this.app.workspace.onLayoutReady(() => {
       this.initDone = this.initialize().catch((e) => {
@@ -124,7 +127,12 @@ export default class VaneSearchPlugin extends Plugin {
 
   private setStatus(s: string) {
     this.status = s;
-    this.statusEl?.setText(`Vane: ${s}`);
+    this.statusTextEl?.setText(`Vane: ${s}`);
+  }
+
+  private openSearch() {
+    if (!this.search) { new Notice('Vane Search is still starting'); return; }
+    new VaneSearchModal(this.app, this.search, () => this.status).open();
   }
 
   private vaultId(): string {
@@ -172,6 +180,7 @@ export default class VaneSearchPlugin extends Plugin {
       resolve: (occ) => this.chunkMeta.get(occ),
       getGen: () => this.gen,
       getProviderFingerprint: () => embeddingFingerprint(this.provider, CHUNKER_VERSION),
+      getFloor: () => this.vaneSettings.minScore,
     });
 
     if (this.gen) {
