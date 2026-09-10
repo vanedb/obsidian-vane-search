@@ -22,6 +22,15 @@ export interface RelatedNotesHost {
   getGen(): GenerationRecord | null;
   getClient(): IndexClient | null;
   getSearch(): SearchService | null;
+  /** Folder path to hide from the panel ('' = no exclusion), read live so a settings change takes effect immediately. */
+  getRelatedExcludeFolder(): string;
+}
+
+/** True iff `path` is the excluded folder itself or lives under it. `''` disables the filter. */
+export function isExcludedByFolder(path: string, excludeFolder: string): boolean {
+  if (!excludeFolder) return false;
+  const prefix = excludeFolder.endsWith('/') ? excludeFolder : `${excludeFolder}/`;
+  return path === excludeFolder || path.startsWith(prefix);
 }
 
 export class RelatedNotesView extends ItemView {
@@ -97,7 +106,10 @@ export class RelatedNotesView extends ItemView {
     const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path });
     if (this.closed) return;
     // Deleted-but-indexed notes are dropped here too — reconciliation is deferred to a later phase.
-    const results = rawResults.filter((r) => existsAsFile(this.app, r.path));
+    const excludeFolder = this.host.getRelatedExcludeFolder();
+    const results = rawResults.filter(
+      (r) => existsAsFile(this.app, r.path) && !isExcludedByFolder(r.path, excludeFolder)
+    );
     this.render(results);
   }
 

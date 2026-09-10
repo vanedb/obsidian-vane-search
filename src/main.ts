@@ -169,6 +169,7 @@ export default class VaneSearchPlugin extends Plugin {
       getGen: () => this.gen,
       getClient: () => this.client,
       getSearch: () => this.search,
+      getRelatedExcludeFolder: () => this.vaneSettings.relatedExcludeFolder,
     };
   }
 
