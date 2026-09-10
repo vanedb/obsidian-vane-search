@@ -6,7 +6,7 @@ import { l2Normalize } from '../providers/embedding-provider';
 import type { GenerationRecord } from '../storage/generation-store';
 import type { IndexClient } from '../index/index-client';
 import type { NoteResult, SearchService } from '../search/search-service';
-import { existsAsFile, openNoteOrNotice } from './open-note';
+import { existsAsFile, headingFromBreadcrumb, openNoteOrNotice } from './open-note';
 
 export const RELATED_VIEW_TYPE = 'vane-related-notes';
 
@@ -139,7 +139,7 @@ export class RelatedNotesView extends ItemView {
       const pct = Math.round(Math.max(0, r.score) * 100);
       item.createEl('small', { text: `${r.path} · ${pct}%` });
       item.addEventListener('click', (evt: MouseEvent) => {
-        openNoteOrNotice(this.app, r.path, evt.metaKey || evt.ctrlKey);
+        openNoteOrNotice(this.app, r.path, evt.metaKey || evt.ctrlKey, headingFromBreadcrumb(r.breadcrumb));
       });
     }
   }
