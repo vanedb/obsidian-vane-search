@@ -1,4 +1,4 @@
-import { reqAsPromise, txDone, type FileRow, type VectorRow } from '../storage/vane-db';
+import { getVectors, reqAsPromise, txDone, type FileRow, type VectorRow } from '../storage/vane-db';
 import type { GenerationRecord } from '../storage/generation-store';
 import type { EmbeddingProvider } from '../providers/embedding-provider';
 import type { IndexClient } from '../index/index-client';
@@ -97,20 +97,10 @@ export async function runFullIndex(deps: {
     }
     const uniqueHashes = [...textByHash.keys()];
 
-    // Which of those already have a stored vector? Batch the `vectors.get`s
-    // inside one readonly transaction instead of one transaction per hash.
-    const storedVectors = new Map<string, Float32Array>();
-    const toEmbedHashes: string[] = [];
-    if (uniqueHashes.length) {
-      const txv = db.transaction('vectors');
-      const store = txv.objectStore('vectors');
-      const rows = await Promise.all(
-        uniqueHashes.map((h) => reqAsPromise<VectorRow | undefined>(store.get([gen.embeddingFingerprint, h]))));
-      uniqueHashes.forEach((h, i) => {
-        const row = rows[i];
-        if (row) storedVectors.set(h, row.vector); else toEmbedHashes.push(h);
-      });
-    }
+    // Which of those already have a stored vector? Batched inside one readonly transaction
+    // instead of one transaction per hash.
+    const storedVectors = await getVectors(db, gen.embeddingFingerprint, uniqueHashes);
+    const toEmbedHashes = uniqueHashes.filter((h) => !storedVectors.has(h));
 
     // ---- Pass 3: embed the whole window's missing unique texts in ONE call —
     // the provider splits this into maxBatch/maxBatchChars requests internally,

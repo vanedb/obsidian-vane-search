@@ -31,6 +31,10 @@ export class SearchService {
   }) {}
 
   async search(query: string, limit = 20): Promise<NoteResult[]> {
+    // One gen snapshot for BOTH the fingerprint check and the grouping below — getGen() is read
+    // exactly once here. A rebuild can reassign the active generation while we `await embed(...)`;
+    // if grouping re-read getGen() afterwards it could run against a different generation than the
+    // one just checked, silently defeating the ProviderMismatchError check.
     const gen = this.deps.getGen();
     if (!gen) return [];
     if (this.deps.getProviderFingerprint) {
@@ -42,14 +46,14 @@ export class SearchService {
       }
     }
     const [qv] = await this.deps.getProvider().embed([query], 'query');
-    return this.searchVector(qv, limit);
+    return this.groupHits(qv, limit, gen);
   }
 
   /**
    * Same grouping/floor/tombstone/widening logic as `search`, but takes a raw query vector
-   * directly — no embedding call, no provider-fingerprint check. Used by `search` itself (after
-   * embedding the query text) and by callers that already have a vector (e.g. a note-similarity
-   * centroid for the related-notes panel).
+   * directly — no embedding call, no provider-fingerprint check. Used by callers that already
+   * have a vector (e.g. a note-similarity centroid for the related-notes panel). Reads its own
+   * gen snapshot since there's no earlier check it needs to stay consistent with.
    */
   async searchVector(
     queryVector: Float32Array,
@@ -58,6 +62,16 @@ export class SearchService {
   ): Promise<NoteResult[]> {
     const gen = this.deps.getGen();
     if (!gen) return [];
+    return this.groupHits(queryVector, limit, gen, opts);
+  }
+
+  /** The widening/group/floor/tombstone loop, against a caller-supplied gen snapshot. */
+  private async groupHits(
+    queryVector: Float32Array,
+    limit: number,
+    gen: GenerationRecord,
+    opts?: { excludePath?: string },
+  ): Promise<NoteResult[]> {
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
 

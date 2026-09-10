@@ -99,6 +99,23 @@ describe('SearchService', () => {
     expect(results).toEqual([{ path: 'a.md', breadcrumb: 'a', score: 0.9 }]);
   });
 
+  it('search(): groups against the SAME gen snapshot used for the fingerprint check, even if getGen() would return a different generation after the embed await (simulates a rebuild racing the query)', async () => {
+    const { client } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
+    const genAtCallTime = genWith({ 0: 'a.md#0' }); // the snapshot search() must stick with
+    const genAfterRebuild = genWith({ 0: 'b.md#0' }); // a different generation object — must NOT be used for grouping
+    let calls = 0;
+    const svc = new SearchService({
+      getProvider: () => provider,
+      client,
+      resolve: (o) => meta(o.split('#')[0]),
+      // First call (inside search(), before the embed await) returns the original snapshot;
+      // any later call (e.g. a buggy re-read inside grouping) would return the swapped generation.
+      getGen: () => (calls++ === 0 ? genAtCallTime : genAfterRebuild),
+    });
+    const results = await svc.search('anything');
+    expect(results).toEqual([{ path: 'a.md', breadcrumb: 'a', score: 0.9 }]);
+  });
+
   it('rejects with ProviderMismatchError and never embeds when the live provider fingerprint differs from the generation', async () => {
     const { client } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
     const gen = genWith({ 0: 'a.md#0' }); // genWith → embeddingFingerprint: 'f'

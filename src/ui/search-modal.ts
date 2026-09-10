@@ -1,5 +1,6 @@
-import { App, Notice, SuggestModal, TFile } from 'obsidian';
+import { App, SuggestModal, TFile } from 'obsidian';
 import { ProviderMismatchError, type SearchService, type NoteResult } from '../search/search-service';
+import { openNoteOrNotice } from './open-note';
 import { RequestGate } from './request-gate';
 
 const DEBOUNCE_MS = 300;
@@ -88,12 +89,6 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
   }
 
   onChooseSuggestion(r: SearchResult, evt: MouseEvent | KeyboardEvent): void {
-    const af = this.app.vault.getAbstractFileByPath(r.path);
-    if (!(af instanceof TFile)) {
-      new Notice('Vane Search: that note no longer exists — run "Rebuild index from scratch"');
-      return;
-    }
-    const newLeaf = !!(evt && (evt.metaKey || evt.ctrlKey));
-    void this.app.workspace.openLinkText(r.path, '', newLeaf);
+    openNoteOrNotice(this.app, r.path, !!(evt && (evt.metaKey || evt.ctrlKey)));
   }
 }

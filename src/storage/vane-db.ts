@@ -32,6 +32,19 @@ export function reqAsPromise<T>(req: IDBRequest<T>): Promise<T> {
 }
 
 /**
+ * Batched `vectors.get([fingerprint, hash])` lookup for many hashes, in one readonly
+ * transaction. Hashes with no stored vector are simply absent from the returned map.
+ */
+export async function getVectors(db: IDBDatabase, fingerprint: string, hashes: string[]): Promise<Map<string, Float32Array>> {
+  const out = new Map<string, Float32Array>();
+  if (hashes.length === 0) return out;
+  const store = db.transaction('vectors').objectStore('vectors');
+  const rows = await Promise.all(hashes.map((h) => reqAsPromise<VectorRow | undefined>(store.get([fingerprint, h]))));
+  hashes.forEach((h, i) => { const row = rows[i]; if (row) out.set(h, row.vector); });
+  return out;
+}
+
+/**
  * Resolves on transaction COMMIT (oncomplete), not on individual request success —
  * this is the durability point. Issue all writes synchronously before awaiting:
  * an `await` between puts lets the transaction auto-commit early.

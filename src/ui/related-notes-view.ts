@@ -1,10 +1,12 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf, debounce } from 'obsidian';
-import { reqAsPromise, type VectorRow } from '../storage/vane-db';
+import { ItemView, debounce } from 'obsidian';
+import type { WorkspaceLeaf } from 'obsidian';
+import { getVectors, reqAsPromise } from '../storage/vane-db';
 import type { ChunkRow } from '../chunker/whole-file';
 import { l2Normalize } from '../providers/embedding-provider';
 import type { GenerationRecord } from '../storage/generation-store';
 import type { IndexClient } from '../index/index-client';
 import type { NoteResult, SearchService } from '../search/search-service';
+import { existsAsFile, openNoteOrNotice } from './open-note';
 
 export const RELATED_VIEW_TYPE = 'vane-related-notes';
 
@@ -74,6 +76,8 @@ export class RelatedNotesView extends ItemView {
 
     const tombstones = new Set(gen.tombstones);
     const prefix = `${file.path}#`;
+    // O(live chunks) per navigation — fine at today's scale; a path→occurrences index would
+    // avoid the full idMap scan if this ever shows up as a bottleneck.
     const occIds = Object.entries(gen.idMap)
       .filter(([vaneId, occ]) => occ.startsWith(prefix) && !tombstones.has(Number(vaneId)))
       .map(([, occ]) => occ);
@@ -93,7 +97,7 @@ export class RelatedNotesView extends ItemView {
     const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path });
     if (this.closed) return;
     // Deleted-but-indexed notes are dropped here too — reconciliation is deferred to a later phase.
-    const results = rawResults.filter((r) => this.app.vault.getAbstractFileByPath(r.path) instanceof TFile);
+    const results = rawResults.filter((r) => existsAsFile(this.app, r.path));
     this.render(results);
   }
 
@@ -106,12 +110,8 @@ export class RelatedNotesView extends ItemView {
     const inputHashes = chunkRows.filter((r): r is ChunkRow => !!r).map((r) => r.inputHash);
     if (inputHashes.length === 0) return [];
 
-    const vectorTx = db.transaction('vectors');
-    const vectorStore = vectorTx.objectStore('vectors');
-    const vectorRows = await Promise.all(
-      inputHashes.map((h) => reqAsPromise<VectorRow | undefined>(vectorStore.get([gen.embeddingFingerprint, h])))
-    );
-    return vectorRows.filter((r): r is VectorRow => !!r).map((r) => r.vector);
+    const vectors = await getVectors(db, gen.embeddingFingerprint, inputHashes);
+    return inputHashes.map((h) => vectors.get(h)).filter((v): v is Float32Array => !!v);
   }
 
   private renderMessage(text: string): void {
@@ -139,20 +139,14 @@ export class RelatedNotesView extends ItemView {
       const pct = Math.round(Math.max(0, r.score) * 100);
       item.createEl('small', { text: `${r.path} · ${pct}%` });
       item.addEventListener('click', (evt: MouseEvent) => {
-        const af = this.app.vault.getAbstractFileByPath(r.path);
-        if (!(af instanceof TFile)) {
-          new Notice('Vane Search: that note no longer exists — run "Rebuild index from scratch"');
-          return;
-        }
-        const newLeaf = evt.metaKey || evt.ctrlKey;
-        void this.app.workspace.openLinkText(r.path, '', newLeaf);
+        openNoteOrNotice(this.app, r.path, evt.metaKey || evt.ctrlKey);
       });
     }
   }
 }
 
 /** Component-wise mean of same-dimension vectors. Caller L2-normalizes the result. */
-function meanVector(vectors: Float32Array[], dim: number): Float32Array {
+export function meanVector(vectors: Float32Array[], dim: number): Float32Array {
   const sum = new Float32Array(dim);
   for (const v of vectors) for (let i = 0; i < dim; i++) sum[i] += v[i];
   for (let i = 0; i < dim; i++) sum[i] /= vectors.length;
