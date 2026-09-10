@@ -1,6 +1,0 @@
-source:  npm @vanedb/wasm@0.1.0 (web target)
-built:   npm pack (2026-09-09T18:52:28Z)
-note:    regenerate with scripts/sync-vanedb.sh — do not edit by hand.
-         The plugin inlines vanedb_wasm_bg.wasm into main.js (esbuild binary
-         loader), so it runs offline with no runtime fetch. No Rust toolchain
-         needed; bump VANEDB_WASM_VERSION (or the default above) to update.

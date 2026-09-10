@@ -12,6 +12,15 @@ const worker = await esbuild.build({
   bundle: true,
   format: 'iife',
   target: 'es2022',
+  // @vanedb/wasm's package.json exports map picks resolution by condition, not
+  // by esbuild's platform default (which is neutral/node-first). Force the
+  // browser/web build (`web/index.js`) so `initSync`/`ApproxIndex` come from the
+  // wasm-pack --target web glue and the raw `.wasm` import below resolves to
+  // `web/vanedb_wasm_bg.wasm`, which esbuild's binary loader inlines. The
+  // node build's `initSync()` takes no args and lazily requires the wasm file
+  // at runtime — wrong for this offline, inlined, Blob-URL-worker plugin.
+  platform: 'browser',
+  conditions: ['browser', 'import', 'default'],
   write: false,
   minify: prod,
   loader: { '.wasm': 'binary' },

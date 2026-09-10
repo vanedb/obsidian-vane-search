@@ -1,4 +1,4 @@
-import { ApproxIndex } from '../../vendor/vanedb-wasm/vanedb_wasm.js';
+import { ApproxIndex } from '@vanedb/wasm';
 import type { IndexHit, VaneIndex, VaneIndexOptions } from './vane-index';
 
 export class MemoryVaneIndex implements VaneIndex {
