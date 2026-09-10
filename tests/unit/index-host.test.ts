@@ -65,4 +65,17 @@ describe('index host protocol', () => {
     await expect(p1).rejects.toThrow('worker crashed');
     await expect(p2).rejects.toThrow('worker crashed');
   });
+
+  it('rejectInFlight() rejects every pending call directly, independent of onFatal — used when a caller is about to terminate the worker itself (e.g. a background-rebuild swap)', async () => {
+    const t: Transport = { post: () => {}, onResponse: () => {} }; // no onFatal — nothing ever calls the worker back
+    const client = new IndexClient(t);
+    const p1 = client.stats();
+    const p2 = client.search(new Float32Array(4), 1);
+    client.rejectInFlight(new Error('index worker swapped'));
+    await expect(p1).rejects.toThrow('index worker swapped');
+    await expect(p2).rejects.toThrow('index worker swapped');
+    // A response that arrives after rejectInFlight has already cleared the queue must be a
+    // harmless no-op — no stray resolve on an already-settled promise, no throw.
+    expect(() => client.rejectInFlight(new Error('again'))).not.toThrow();
+  });
 });

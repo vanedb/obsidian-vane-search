@@ -293,11 +293,18 @@ export default class VaneSearchPlugin extends Plugin {
     }));
   }
 
-  private async refreshChunkMeta() {
-    if (!this.db) return;
+  /** Reads chunkMeta from `chunks` without touching `this.chunkMeta` — used by the full-rebuild
+   *  swap to compute the new map BEFORE installing it, so gen/client/chunkMeta can be assigned
+   *  together in one synchronous block instead of chunkMeta lagging behind via a later await. */
+  private async loadChunkMeta(): Promise<Map<string, ChunkMeta>> {
+    if (!this.db) return new Map();
     const rows = await reqAsPromise<ChunkRow[]>(
       this.db.transaction('chunks').objectStore('chunks').getAll());
-    this.chunkMeta = new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+    return new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+  }
+
+  private async refreshChunkMeta() {
+    this.chunkMeta = await this.loadChunkMeta();
   }
 
   private async initialize() {
@@ -426,15 +433,47 @@ export default class VaneSearchPlugin extends Plugin {
           const built = await this.buildGenerationInNewWorker(buildGen);
           res = built.res;
 
-          await activateGeneration(this.db!, buildGen);
-          // Atomic swap: search reads `this.client`/`this.gen` live (SearchService.getClient/
-          // getGen), so from here on every search transparently hits the newly-built index.
-          const oldWorker = this.worker;
-          this.worker = built.worker;
-          this.client = built.client;
-          this.gen = buildGen;
-          this.indexReady = true;
-          oldWorker?.terminate();
+          // Everything from here to the synchronous swap below can still fail (activateGeneration
+          // rejects — realistically onunload closed this.db mid-rebuild — or this.unloaded flips
+          // true while we await): any throw in this block must terminate the freshly-built worker
+          // exactly once, since it was never installed as `this.worker` and nothing else owns it.
+          try {
+            await activateGeneration(this.db!, buildGen);
+            // Computed BEFORE the swap, while the OLD worker/gen still serve — so gen, client,
+            // and chunkMeta can all be assigned together in one synchronous block below instead
+            // of chunkMeta lagging behind via a later `await refreshChunkMeta()` (a search in that
+            // gap would resolve the NEW gen's occurrenceIds against the STALE chunkMeta map).
+            const newChunkMeta = await this.loadChunkMeta();
+
+            // Atomic swap: search reads `this.client`/`this.gen` live (SearchService.getClient/
+            // getGen, snapshotted together per search), so from here on every search transparently
+            // hits the newly-built index — gen, client, and chunkMeta all change in the same tick.
+            const oldWorker = this.worker;
+            const oldClient = this.client;
+            this.worker = built.worker;
+            this.client = built.client;
+            this.gen = buildGen;
+            this.chunkMeta = newChunkMeta;
+            this.indexReady = true;
+
+            if (this.unloaded) {
+              // onunload may have already run during one of the awaits above — it only terminates
+              // whatever `this.worker` was AT THAT TIME (the old one), so the build worker we just
+              // installed would otherwise leak with nothing left to terminate it.
+              this.worker.terminate();
+              this.worker = null;
+            } else {
+              // A search still parked on the OLD client (e.g. mid-embed when the swap fired) must
+              // reject cleanly instead of hanging forever once its worker is gone — plain
+              // Worker.terminate() fires neither onmessage nor onerror, so nothing else would
+              // ever settle that pending call.
+              oldClient?.rejectInFlight(new Error('vane-search: index worker swapped'));
+              oldWorker?.terminate();
+            }
+          } catch (e) {
+            built.worker.terminate();
+            throw e;
+          }
         } else {
           // Incremental: fingerprint unchanged, same generation — insert straight into the
           // current serving worker, exactly as before. No second worker, no swap.
@@ -444,9 +483,9 @@ export default class VaneSearchPlugin extends Plugin {
             onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
           });
           await activateGeneration(this.db!, this.gen!);
+          await this.refreshChunkMeta();
         }
 
-        await this.refreshChunkMeta();
         if (!this.unloaded) {
           this.setStatus(`ready (${Object.keys(this.gen!.idMap).length} chunks)`);
           new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);

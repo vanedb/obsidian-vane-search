@@ -150,4 +150,26 @@ describe('SearchService', () => {
     current = clientB; // simulate the atomic swap after a background rebuild completes
     expect((await svc.search('x')).map((r) => r.path)).toEqual(['b.md']);
   });
+
+  it('search(): groups against the client snapshotted BEFORE the embed await, even if a rebuild swap fires while parked on that await (would otherwise pair OLD gen with NEW client — a torn read)', async () => {
+    const { client: clientA } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
+    const { client: clientB } = cannedClient([{ vaneId: 1, score: 0.8 }], 1); // must NOT be used
+    const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
+    let current = clientA;
+    const swappingProvider: EmbeddingProvider = {
+      id: 'fake', model: 'feature-hash-v1', dimension: () => 64, maxBatch: () => 512,
+      embed: async (texts, kind) => {
+        current = clientB; // the atomic swap happens while this search is parked right here
+        return provider.embed(texts, kind);
+      },
+    };
+    const svc = new SearchService({
+      getProvider: () => swappingProvider,
+      getClient: () => current,
+      resolve: (o) => meta(o.split('#')[0]),
+      getGen: () => gen,
+    });
+    const results = await svc.search('anything');
+    expect(results).toEqual([{ path: 'a.md', breadcrumb: 'a', score: 0.9 }]);
+  });
 });

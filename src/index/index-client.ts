@@ -31,11 +31,18 @@ export class IndexClient {
       this.pending.delete(r.id);
       r.ok ? p.resolve(r.result) : p.reject(new Error(r.error));
     });
-    transport.onFatal?.((err) => {
-      const inFlight = [...this.pending.values()];
-      this.pending.clear();
-      for (const p of inFlight) p.reject(err);
-    });
+    transport.onFatal?.((err) => this.rejectInFlight(err));
+  }
+
+  /** Rejects every pending call with `err` and clears the queue — used both for a fatal
+   *  transport failure (worker crash, via onFatal above) and, deliberately, when a caller
+   *  is about to terminate this client's worker out from under it (e.g. a background-rebuild
+   *  swap): a request still in flight on the old worker at that moment would otherwise hang
+   *  forever instead of rejecting. */
+  rejectInFlight(err: Error): void {
+    const inFlight = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of inFlight) p.reject(err);
   }
 
   private call(msg: DistributiveOmit<IndexRequest, 'id'>): Promise<unknown> {
