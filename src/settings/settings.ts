@@ -13,6 +13,8 @@ export interface VaneSettings {
   docPrefix: string;
   maxBatch: number;
   consentedHosts: string[];
+  /** Minimum similarity score (0-1) a chunk must meet to count toward a result. 0 = off (show all). */
+  minScore: number;
 }
 
 export interface Preset {
@@ -44,6 +46,7 @@ export const DEFAULT_SETTINGS: VaneSettings = {
   docPrefix: PRESETS.openai.docPrefix,
   maxBatch: 64,
   consentedHosts: [],
+  minScore: 0,
 };
 
 export function isLocalHost(baseUrl: string): boolean {

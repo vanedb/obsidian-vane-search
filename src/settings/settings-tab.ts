@@ -49,6 +49,10 @@ export class VaneSettingsTab extends PluginSettingTab {
         if (r.ok && r.dimension) { this.host.settings.dimension = r.dimension; await this.host.saveSettings(); this.display(); }
       }));
 
+    new Setting(containerEl).setName('Minimum match score').setDesc('0-1, 0 = show all results regardless of relevance.')
+      .addSlider((sl) => sl.setLimits(0, 1, 0.01).setValue(s.minScore).setDynamicTooltip()
+        .onChange(async (v) => { s.minScore = v; await this.host.saveSettings(); }));
+
     new Setting(containerEl).setName('Rebuild index').setDesc('Re-embed the whole vault with the current provider.')
       .addButton((b) => b.setButtonText('Rebuild').setWarning().onClick(() => void this.host.reindex()));
   }

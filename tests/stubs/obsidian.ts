@@ -38,3 +38,16 @@ export class Notice {
 }
 
 export class Plugin {}
+
+export class ItemView {
+  app: unknown;
+  leaf: unknown;
+  contentEl: unknown = {};
+  constructor(leaf: unknown) {
+    this.leaf = leaf;
+  }
+}
+
+export function debounce<T extends unknown[]>(cb: (...args: T) => unknown, _timeout?: number, _resetTimer?: boolean): (...args: T) => void {
+  return (...args: T) => { cb(...args); };
+}

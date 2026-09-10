@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect } from 'vitest';
-import { openVaneDb, reqAsPromise, txDone, dbName, type VectorRow } from '../../src/storage/vane-db';
+import { getVectors, openVaneDb, reqAsPromise, txDone, dbName, type VectorRow } from '../../src/storage/vane-db';
 
 describe('openVaneDb', () => {
   it('creates the five stores', async () => {
@@ -52,6 +52,24 @@ describe('openVaneDb', () => {
     store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 });
     const secondReq = store.add({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 }); // duplicate key
     await expect(reqAsPromise(secondReq)).rejects.toThrow();
+  });
+
+  it('getVectors: batches vectors.get across hashes, omitting hashes with no stored vector', async () => {
+    const db = await openVaneDb('vault-get-vectors');
+    const tx = db.transaction('vectors', 'readwrite');
+    tx.objectStore('vectors').put({ fingerprint: 'fp', inputHash: 'h1', vector: Float32Array.from([1, 2]) } satisfies VectorRow);
+    await txDone(tx);
+    const got = await getVectors(db, 'fp', ['h1', 'missing']);
+    expect(got.size).toBe(1);
+    expect([...got.get('h1')!]).toEqual([1, 2]);
+    expect(got.has('missing')).toBe(false);
+    db.close();
+  });
+
+  it('getVectors: an empty hash list returns an empty map', async () => {
+    const db = await openVaneDb('vault-get-vectors-empty');
+    expect((await getVectors(db, 'fp', [])).size).toBe(0);
+    db.close();
   });
 
   it('txDone rejects when a request fails (ConstraintError)', async () => {

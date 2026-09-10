@@ -161,10 +161,13 @@ describe('runFullIndex', () => {
   it('a NEW generation re-indexes unchanged files (no stale mtime/size skip)', async () => {
     const { db, source, client, gen } = await setup();
     await runFullIndex({ db, source, provider, client, gen });
-    // simulate a provider/chunker change: new fingerprint, fresh generation + worker
+    // Simulate a fresh generation (e.g. after a rebuild) with a fresh worker. Same
+    // provider fingerprint — runFullIndex now refuses a MISMATCHED one outright (see the
+    // fingerprint-mismatch test below) — only the generation NUMBER is new, which is what
+    // this test's mtime/size-skip check actually exercises.
     const client2 = freshClient();
     await client2.init(64, capacityFor(100));
-    const gen2 = newGeneration(2, { embeddingFingerprint: FP + ':v2', graphFingerprint: GRAPH_FP, dim: 64 });
+    const gen2 = newGeneration(2, { embeddingFingerprint: FP, graphFingerprint: GRAPH_FP, dim: 64 });
     await saveGeneration(db, gen2);
     const res = await runFullIndex({ db, source, provider, client: client2, gen: gen2 });
     expect(res.indexed).toBe(3); // mtime/size never moved, but the new generation must not skip
@@ -205,6 +208,28 @@ describe('runFullIndex', () => {
 
     const res = await runFullIndex({ db, source, provider, client, gen });
     expect(res).toEqual({ indexed: 3, skipped: 0 });
+  });
+
+  it('refuses to index when the provider fingerprint does not match the generation, writing nothing', async () => {
+    const { db, source, client } = await setup();
+    // A generation stamped with a fingerprint the live `provider` did NOT produce — e.g. the
+    // user switched provider without clicking "Rebuild". Every caller (manual or live) must
+    // be refused before anything is read/embedded/written, so a poisoned vector row keyed by
+    // the WRONG fingerprint can never land in the vectors store.
+    const mismatched = newGeneration(99, {
+      embeddingFingerprint: FP + ':mismatched', graphFingerprint: GRAPH_FP, dim: 64,
+    });
+    await saveGeneration(db, mismatched);
+
+    await expect(runFullIndex({ db, source, provider, client, gen: mismatched }))
+      .rejects.toThrow(/fingerprint mismatch/);
+
+    // Nothing was applied: gen untouched, and — the actual bug this guards against —
+    // no vector row was written under any fingerprint.
+    expect(mismatched.idMap).toEqual({});
+    expect(mismatched.nextVaneId).toBe(0);
+    const vectorRows = await reqAsPromise(db.transaction('vectors').objectStore('vectors').getAll());
+    expect(vectorRows).toEqual([]);
   });
 });
 
