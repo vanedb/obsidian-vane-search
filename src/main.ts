@@ -318,7 +318,7 @@ export default class VaneSearchPlugin extends Plugin {
 
     this.search = new SearchService({
       getProvider: () => this.provider,
-      client: this.client,
+      getClient: () => this.client!,
       resolve: (occ) => this.chunkMeta.get(occ),
       getGen: () => this.gen,
       getProviderFingerprint: () => embeddingFingerprint(this.provider, CHUNKER_VERSION),

@@ -36,7 +36,7 @@ describe('SearchService', () => {
       { vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.8 }, { vaneId: 2, score: 0.7 },
     ], 3);
     const gen = genWith({ 0: 'a.md#0', 1: 'a.md#1', 2: 'b.md#0' });
-    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen });
+    const svc = new SearchService({ getProvider: () => provider, getClient: () => client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen });
     const results = await svc.search('anything');
     expect(results).toEqual([
       { path: 'a.md', breadcrumb: 'a', score: 0.9 },
@@ -51,7 +51,7 @@ describe('SearchService', () => {
     for (let i = 0; i < 100; i++) idMap[i] = `n${i}.md#0`;
     const tomb = Array.from({ length: 60 }, (_, i) => i);
     const { client, ks } = cannedClient(hits, 100);
-    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap, tomb) });
+    const svc = new SearchService({ getProvider: () => provider, getClient: () => client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap, tomb) });
     const results = await svc.search('anything', 20);
     expect(results).toHaveLength(20);
     expect(results[0].path).toBe('n60.md');
@@ -61,7 +61,7 @@ describe('SearchService', () => {
   it('applies the similarity floor', async () => {
     const { client } = cannedClient([{ vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.1 }], 2);
     const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
-    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
+    const svc = new SearchService({ getProvider: () => provider, getClient: () => client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
     expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
   });
 
@@ -70,7 +70,7 @@ describe('SearchService', () => {
     const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
     let floor = 0.5;
     const svc = new SearchService({
-      getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen,
+      getProvider: () => provider, getClient: () => client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen,
       getFloor: () => floor,
     });
     expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
@@ -80,7 +80,7 @@ describe('SearchService', () => {
 
   it('returns [] when no generation is loaded', async () => {
     const { client } = cannedClient([], 0);
-    const svc = new SearchService({ getProvider: () => provider, client, resolve: () => undefined, getGen: () => null });
+    const svc = new SearchService({ getProvider: () => provider, getClient: () => client, resolve: () => undefined, getGen: () => null });
     expect(await svc.search('x')).toEqual([]);
   });
 
@@ -93,7 +93,7 @@ describe('SearchService', () => {
       id: 'fake', model: 'feature-hash-v1', dimension: () => 64, maxBatch: () => 512,
       embed: () => { throw new Error('searchVector must not embed'); },
     };
-    const svc = new SearchService({ getProvider: () => throwingProvider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
+    const svc = new SearchService({ getProvider: () => throwingProvider, getClient: () => client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
     const results = await svc.searchVector(new Float32Array(64), 20, { excludePath: 'b.md' });
     // b.md (0.8) is excluded despite clearing the floor; c.md (0.4) is dropped by the floor.
     expect(results).toEqual([{ path: 'a.md', breadcrumb: 'a', score: 0.9 }]);
@@ -106,7 +106,7 @@ describe('SearchService', () => {
     let calls = 0;
     const svc = new SearchService({
       getProvider: () => provider,
-      client,
+      getClient: () => client,
       resolve: (o) => meta(o.split('#')[0]),
       // First call (inside search(), before the embed await) returns the original snapshot;
       // any later call (e.g. a buggy re-read inside grouping) would return the swapped generation.
@@ -127,11 +127,27 @@ describe('SearchService', () => {
     };
     const svc = new SearchService({
       getProvider: () => throwingProvider,
-      client,
+      getClient: () => client,
       resolve: (o) => meta(o.split('#')[0]),
       getGen: () => gen,
       getProviderFingerprint: () => 'DIFFERENT',
     });
     await expect(svc.search('anything')).rejects.toBeInstanceOf(ProviderMismatchError);
+  });
+
+  it('reads the client live: a search issued after getClient() starts returning a new client uses that new client', async () => {
+    const { client: clientA } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
+    const { client: clientB } = cannedClient([{ vaneId: 1, score: 0.8 }], 1);
+    const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
+    let current = clientA;
+    const svc = new SearchService({
+      getProvider: () => provider,
+      getClient: () => current,
+      resolve: (o) => meta(o.split('#')[0]),
+      getGen: () => gen,
+    });
+    expect((await svc.search('x')).map((r) => r.path)).toEqual(['a.md']);
+    current = clientB; // simulate the atomic swap after a background rebuild completes
+    expect((await svc.search('x')).map((r) => r.path)).toEqual(['b.md']);
   });
 });

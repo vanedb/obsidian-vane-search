@@ -20,7 +20,9 @@ export class ProviderMismatchError extends Error {
 export class SearchService {
   constructor(private deps: {
     getProvider: () => EmbeddingProvider;
-    client: IndexClient;
+    /** Live accessor — a background rebuild swaps in a new worker/client atomically once
+     *  it's fully built, and every search after the swap must go through the new one. */
+    getClient: () => IndexClient;
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
     getGen: () => GenerationRecord | null;
     getProviderFingerprint?: () => string | null;
@@ -74,11 +76,15 @@ export class SearchService {
   ): Promise<NoteResult[]> {
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
+    // Snapshotted once, paired with the `gen` the caller already snapshotted — a rebuild
+    // swaps client and gen together, so mixing an old client with a new gen (or vice versa)
+    // mid-widening-loop would be a duplicate of the race `search()` already guards against.
+    const client = this.deps.getClient();
 
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
     let k = FIRST_K;
     for (let attempt = 0; ; attempt++) {
-      const hits = await this.deps.client.search(queryVector, k);
+      const hits = await client.search(queryVector, k);
       const byNote = new Map<string, NoteResult>();
       for (const h of hits) {
         if (tombstones.has(h.vaneId) || h.score < floor) continue;
@@ -93,7 +99,7 @@ export class SearchService {
         }
       }
       const notes = [...byNote.values()].sort((a, b) => b.score - a.score);
-      const { size } = await this.deps.client.stats();
+      const { size } = await client.stats();
       if (notes.length >= limit || k >= size || attempt >= MAX_WIDENINGS) {
         return notes.slice(0, limit);
       }
