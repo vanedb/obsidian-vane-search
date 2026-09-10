@@ -78,4 +78,29 @@ describe('index host protocol', () => {
     // harmless no-op — no stray resolve on an already-settled promise, no throw.
     expect(() => client.rejectInFlight(new Error('again'))).not.toThrow();
   });
+
+  it('rejectInFlight() retires the client: a call made AFTER it rejects immediately instead of hanging (real client + real host, over the loopback transport)', async () => {
+    // Uses a REAL IndexClient/host round-trip (via setup()), not a canned mock — this
+    // exercises the actual call()/dead gate, not just a hand-rolled Transport stub.
+    const { client } = setup();
+    await client.init(64, 1024);
+
+    // A call already posted and in flight when rejectInFlight fires rejects with that error
+    // (pre-existing behavior, still covered here for completeness).
+    const pending = client.search(new Float32Array(64), 1);
+    client.rejectInFlight(new Error('index worker swapped'));
+    await expect(pending).rejects.toThrow('index worker swapped');
+
+    // A call made AFTER rejectInFlight — e.g. a search that was parked on an embedding call
+    // at swap time and only reaches .search()/.stats() afterward — must reject immediately
+    // instead of posting to a (by then terminated) worker and hanging forever: plain
+    // Worker.terminate() makes postMessage a silent no-op, so nothing would otherwise ever
+    // settle that promise.
+    await expect(client.search(new Float32Array(64), 1)).rejects.toThrow(/no longer available/i);
+    await expect(client.stats()).rejects.toThrow(/no longer available/i);
+
+    // Calling rejectInFlight again (e.g. onFatal firing after the deliberate swap-time call)
+    // must stay a harmless no-op.
+    expect(() => client.rejectInFlight(new Error('again'))).not.toThrow();
+  });
 });
