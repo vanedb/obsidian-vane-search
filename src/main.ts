@@ -351,6 +351,36 @@ export default class VaneSearchPlugin extends Plugin {
     this.registerVaultSync();
   }
 
+  /**
+   * Builds `buildGen` to completion in a brand-new worker/client — spawn, init, runFullIndex —
+   * and returns them. Never touches `this.worker`/`this.client`/`this.gen`: the OLD ones keep
+   * serving search for the whole call. Throws (after terminating the build worker) on any
+   * failure — embedding error, fingerprint guard in runFullIndex, worker crash, or the plugin
+   * unloading mid-build — so the caller's try/catch is the single place that decides what a
+   * failure means; this helper's only job on failure is "don't leak the worker".
+   */
+  private async buildGenerationInNewWorker(
+    buildGen: GenerationRecord,
+  ): Promise<{ worker: Worker; client: IndexClient; res: { indexed: number; skipped: number } }> {
+    const worker = spawnIndexWorker();
+    if (this.unloaded) { worker.terminate(); throw new Error('vane-search: unloaded during rebuild'); }
+    const client = new IndexClient(workerTransport(worker));
+    try {
+      await client.init(buildGen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+      if (this.unloaded) throw new Error('vane-search: unloaded during rebuild');
+      const res = await runFullIndex({
+        db: this.db!, source: this.fileSource(), provider: this.provider,
+        client, gen: buildGen,
+        onProgress: (done, total) => this.setStatus(`rebuilding ${done}/${total}`),
+      });
+      if (this.unloaded) throw new Error('vane-search: unloaded during rebuild');
+      return { worker, client, res };
+    } catch (e) {
+      worker.terminate();
+      throw e;
+    }
+  }
+
   private async indexVault(force = false) {
     await this.initDone;
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
@@ -381,25 +411,44 @@ export default class VaneSearchPlugin extends Plugin {
         // Settings may have changed since the provider was last built (e.g. via the settings tab).
         this.provider = this.makeProvider();
         const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
-        if (!this.gen || this.gen.embeddingFingerprint !== fp || force) {
-          this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
+        const isFullRebuild = force || !this.gen || this.gen.embeddingFingerprint !== fp;
+
+        let res: { indexed: number; skipped: number };
+        if (isFullRebuild) {
+          // Full rebuild: build the new generation in a SECOND worker while the OLD worker +
+          // OLD `this.gen` keep serving search. Only on success do we activate + swap; on any
+          // failure the old worker/gen/client are untouched, so a failed rebuild leaves the
+          // plugin exactly as it was.
+          const buildGen = newGeneration((this.gen?.generation ?? 0) + 1,
             { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
-          await saveGeneration(this.db!, this.gen);
-          this.indexReady = false; // force the re-init below even if a later branch is added
-        }
-        if (!this.indexReady) {
-          await this.client!.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+          await saveGeneration(this.db!, buildGen);
+
+          const built = await this.buildGenerationInNewWorker(buildGen);
+          res = built.res;
+
+          await activateGeneration(this.db!, buildGen);
+          // Atomic swap: search reads `this.client`/`this.gen` live (SearchService.getClient/
+          // getGen), so from here on every search transparently hits the newly-built index.
+          const oldWorker = this.worker;
+          this.worker = built.worker;
+          this.client = built.client;
+          this.gen = buildGen;
           this.indexReady = true;
+          oldWorker?.terminate();
+        } else {
+          // Incremental: fingerprint unchanged, same generation — insert straight into the
+          // current serving worker, exactly as before. No second worker, no swap.
+          res = await runFullIndex({
+            db: this.db!, source: this.fileSource(), provider: this.provider,
+            client: this.client!, gen: this.gen!,
+            onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+          });
+          await activateGeneration(this.db!, this.gen!);
         }
-        const res = await runFullIndex({
-          db: this.db!, source: this.fileSource(), provider: this.provider,
-          client: this.client!, gen: this.gen,
-          onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
-        });
-        await activateGeneration(this.db!, this.gen);
+
         await this.refreshChunkMeta();
         if (!this.unloaded) {
-          this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+          this.setStatus(`ready (${Object.keys(this.gen!.idMap).length} chunks)`);
           new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
         }
       } catch (e) {
