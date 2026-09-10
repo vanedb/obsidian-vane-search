@@ -45,8 +45,19 @@ export async function runFullIndex(deps: {
   client: IndexClient;
   gen: GenerationRecord;
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Skip the per-file `generations.put(gen)` and commit the generation ONCE after the whole
+   * run instead. Only valid for a `gen.state === 'building'` record that has not been
+   * activated yet (the from-scratch/rebuild path in main.ts's `buildGenerationInNewWorker`):
+   * a crash before that final put leaves content-addressed vectors/chunks rows as harmless
+   * orphans, and any files-rows already written are stamped with a generation number that
+   * never becomes active, so every later run's skip-check ignores them — the whole build is
+   * simply retried. Per-file durability is required for an ALREADY-ACTIVE generation
+   * (incremental indexing), where this must stay false (the default).
+   */
+  deferGenerationCommit?: boolean;
 }): Promise<{ indexed: number; skipped: number }> {
-  const { db, source, provider, client, gen } = deps;
+  const { db, source, provider, client, gen, deferGenerationCommit = false } = deps;
 
   // Backstop against writing a vector row keyed by `gen.embeddingFingerprint` that was
   // actually produced by a DIFFERENT provider (e.g. the live single-file reindex path
@@ -56,6 +67,11 @@ export async function runFullIndex(deps: {
   const providerFp = embeddingFingerprint(provider, CHUNKER_VERSION);
   if (providerFp !== gen.embeddingFingerprint) {
     throw new Error('Vane Search: provider/generation fingerprint mismatch — rebuild the index');
+  }
+  // Belt-and-suspenders, same spirit as the fingerprint guard above: per-file durability is
+  // required once a generation is active, so deferral must never apply to one.
+  if (deferGenerationCommit && gen.state !== 'building') {
+    throw new Error('Vane Search: deferGenerationCommit is only valid for a building generation');
   }
 
   const files = source.list();
@@ -217,17 +233,30 @@ export async function runFullIndex(deps: {
       // Step 3: files row + generation record — the atomic "this file is indexed" commit.
       // Stale chunk rows are derived cache, but dropping them in the same transaction
       // keeps the durable store consistent with the generation record in one commit.
-      const tx2 = db.transaction(['files', 'generations', 'chunks'], 'readwrite');
+      // With `deferGenerationCommit`, the generation record commits ONCE after the whole run
+      // instead (see the doc comment on the option) — the files row + stale-chunk deletes
+      // still commit per file exactly as before.
+      const tx2 = db.transaction(
+        deferGenerationCommit ? ['files', 'chunks'] : ['files', 'generations', 'chunks'], 'readwrite');
       for (const occ of staleOccurrenceIds) tx2.objectStore('chunks').delete(occ);
       tx2.objectStore('files').put({
         path: f.path, mtime: f.mtime, size: f.size,
         contentHash: hash64(content), generation: gen.generation,
       } satisfies FileRow);
-      tx2.objectStore('generations').put(gen);
+      if (!deferGenerationCommit) tx2.objectStore('generations').put(gen);
       await txDone(tx2);
 
       deps.onProgress?.(++done, files.length);
     }
+  }
+
+  if (deferGenerationCommit) {
+    // The single deferred generation commit for the whole run — see the doc comment on the
+    // option. Harmless even if nothing changed: writing the same (or still-empty) record back
+    // is idempotent, and it's about to be superseded by activateGeneration on success anyway.
+    const tx = db.transaction('generations', 'readwrite');
+    tx.objectStore('generations').put(gen);
+    await txDone(tx);
   }
   return { indexed, skipped };
 }

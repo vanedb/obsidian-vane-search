@@ -379,6 +379,10 @@ export default class VaneSearchPlugin extends Plugin {
         db: this.db!, source: this.fileSource(), provider: this.provider,
         client, gen: buildGen,
         onProgress: (done, total) => this.setStatus(`rebuilding ${done}/${total}`),
+        // buildGen is a brand-new 'building' generation, never activated until this whole
+        // rebuild succeeds — see runFullIndex's doc comment on the option for why per-file
+        // durability isn't needed here (a crash just means "retry the whole rebuild").
+        deferGenerationCommit: true,
       });
       if (this.unloaded) throw new Error('vane-search: unloaded during rebuild');
       return { worker, client, res };
