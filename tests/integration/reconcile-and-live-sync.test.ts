@@ -14,7 +14,7 @@ import { embeddingFingerprint } from '../../src/providers/embedding-provider';
 import { CHUNKER_VERSION, type ChunkRow } from '../../src/chunker/whole-file';
 import { runFullIndex, type FileSource } from '../../src/indexer/full-index';
 import { loadGenerationIntoIndex } from '../../src/indexer/load-generation';
-import { reconcileDeletions } from '../../src/indexer/reconcile';
+import { reconcileDeletions, removePaths } from '../../src/indexer/reconcile';
 
 // This file exercises the "keep the index in sync" primitives added on top of
 // runFullIndex/loadGenerationIntoIndex: reconcileDeletions (startup + live delete/rename)
@@ -104,6 +104,35 @@ describe('reconcileDeletions', () => {
   });
 });
 
+describe('removePaths (targeted single-path removal for live delete/rename)', () => {
+  it('removing one path tombstones exactly that path\'s occurrences and leaves the others intact', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    const breadId = Number(Object.entries(gen.idMap).find(([, occ]) => occ === 'bread.md#0')![0]);
+    const coffeeId = Number(Object.entries(gen.idMap).find(([, occ]) => occ === 'coffee.md#0')![0]);
+    const k8sId = Number(Object.entries(gen.idMap).find(([, occ]) => occ === 'k8s.md#0')![0]);
+
+    const { removed } = await removePaths({ db, gen, paths: new Set(['bread.md']) });
+    expect(removed).toBe(1);
+
+    expect(gen.idMap[breadId]).toBeUndefined();
+    expect(gen.tombstones).toContain(breadId);
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('bread.md#0'))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('bread.md'))).toBeUndefined();
+
+    // The other two paths are untouched.
+    expect(gen.idMap[coffeeId]).toBe('coffee.md#0');
+    expect(gen.idMap[k8sId]).toBe('k8s.md#0');
+    expect(gen.tombstones).not.toContain(coffeeId);
+    expect(gen.tombstones).not.toContain(k8sId);
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('coffee.md'))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('k8s.md'))).toBeTruthy();
+
+    const hits = await searchOccurrences(client, gen, 'sourdough starter feeding schedule');
+    expect(hits).not.toContain('bread.md#0');
+  });
+});
+
 describe('live create/modify/rename via single-file runFullIndex', () => {
   it('5. create/modify: a new file is indexed and searchable; a later modify tombstones the old chunk and indexes the new content', async () => {
     const { db, client, gen } = await setup();
@@ -129,9 +158,8 @@ describe('rename', () => {
     await runFullIndex({ db, source, provider, client, gen });
     const oldId = Number(Object.entries(gen.idMap).find(([, occ]) => occ === 'coffee.md#0')![0]);
 
-    // removePath('coffee.md'): reconcile with every OTHER path present.
-    const presentPaths = new Set(['k8s.md', 'bread.md']);
-    await reconcileDeletions({ db, gen, presentPaths });
+    // removePath('coffee.md'): the live delete/rename-old path — targeted, not a whole-vault diff.
+    await removePaths({ db, gen, paths: new Set(['coffee.md']) });
     expect(gen.idMap[oldId]).toBeUndefined();
     expect(gen.tombstones).toContain(oldId);
 
@@ -148,8 +176,7 @@ describe('rename', () => {
     await runFullIndex({ db, source, provider, client, gen });
     const oldId = Number(Object.entries(gen.idMap).find(([, occ]) => occ === 'coffee.md#0')![0]);
 
-    const presentPaths = new Set(['k8s.md', 'bread.md']);
-    await reconcileDeletions({ db, gen, presentPaths });
+    await removePaths({ db, gen, paths: new Set(['coffee.md']) });
     expect(gen.idMap[oldId]).toBeUndefined();
 
     let embedCalls = 0;

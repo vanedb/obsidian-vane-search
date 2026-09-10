@@ -14,7 +14,7 @@ import { requestUrlPost } from './providers/http';
 import { CHUNKER_VERSION, type ChunkRow } from './chunker/whole-file';
 import { runFullIndex, type FileSource } from './indexer/full-index';
 import { loadGenerationIntoIndex } from './indexer/load-generation';
-import { reconcileDeletions } from './indexer/reconcile';
+import { reconcileDeletions, removePaths } from './indexer/reconcile';
 import { SearchService, type ChunkMeta } from './search/search-service';
 import { VaneSearchModal } from './ui/search-modal';
 import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui/related-notes-view';
@@ -233,13 +233,11 @@ export default class VaneSearchPlugin extends Plugin {
     if (!this.unloaded) this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
   }
 
-  /** Tombstones every occurrence still mapped under `path` that the vault no longer has —
-   *  reuses `reconcileDeletions` with "every markdown file except this one" as the present set. */
+  /** Tombstones every occurrence still mapped under `path` — a targeted single-path
+   *  removal (no whole-vault present-set scan; that's `reconcileDeletions`' job at startup). */
   private async removePath(path: string) {
     if (this.unloaded || !this.indexReady || !this.db || !this.gen) return;
-    const presentPaths = new Set(this.app.vault.getMarkdownFiles().map((f) => f.path));
-    presentPaths.delete(path);
-    const { removed } = await reconcileDeletions({ db: this.db, gen: this.gen, presentPaths });
+    const { removed } = await removePaths({ db: this.db, gen: this.gen, paths: new Set([path]) });
     if (removed > 0) {
       await this.refreshChunkMeta();
       if (!this.unloaded) this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
@@ -250,7 +248,10 @@ export default class VaneSearchPlugin extends Plugin {
     if (this.unloaded) return;
     let d = this.pathDebouncers.get(path);
     if (!d) {
-      d = debounce(() => { void this.enqueue(() => this.reindexFile(path)); }, LIVE_DEBOUNCE_MS, true);
+      d = debounce(() => {
+        this.pathDebouncers.delete(path); // debounce fired — don't keep this entry around forever
+        void this.enqueue(() => this.reindexFile(path));
+      }, LIVE_DEBOUNCE_MS, true);
       this.pathDebouncers.set(path, d);
     }
     d();
@@ -271,12 +272,11 @@ export default class VaneSearchPlugin extends Plugin {
    *  is a thin adapter onto the two reused primitives — reconcileDeletions and runFullIndex
    *  (via reindexFile/removePath) — debounced and serialized through `enqueue`. */
   private registerVaultSync() {
-    this.registerEvent(this.app.vault.on('create', (f) => {
+    const onCreateOrModify = (f: TAbstractFile) => {
       if (this.isMdFile(f)) this.scheduleReindex(f.path);
-    }));
-    this.registerEvent(this.app.vault.on('modify', (f) => {
-      if (this.isMdFile(f)) this.scheduleReindex(f.path);
-    }));
+    };
+    this.registerEvent(this.app.vault.on('create', onCreateOrModify));
+    this.registerEvent(this.app.vault.on('modify', onCreateOrModify));
     this.registerEvent(this.app.vault.on('delete', (f) => {
       if (this.isMdFile(f)) this.scheduleRemove(f.path);
     }));
