@@ -42,13 +42,29 @@ export class SearchService {
       }
     }
     const [qv] = await this.deps.getProvider().embed([query], 'query');
+    return this.searchVector(qv, limit);
+  }
+
+  /**
+   * Same grouping/floor/tombstone/widening logic as `search`, but takes a raw query vector
+   * directly — no embedding call, no provider-fingerprint check. Used by `search` itself (after
+   * embedding the query text) and by callers that already have a vector (e.g. a note-similarity
+   * centroid for the related-notes panel).
+   */
+  async searchVector(
+    queryVector: Float32Array,
+    limit = 20,
+    opts?: { excludePath?: string },
+  ): Promise<NoteResult[]> {
+    const gen = this.deps.getGen();
+    if (!gen) return [];
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
 
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
     let k = FIRST_K;
     for (let attempt = 0; ; attempt++) {
-      const hits = await this.deps.client.search(qv, k);
+      const hits = await this.deps.client.search(queryVector, k);
       const byNote = new Map<string, NoteResult>();
       for (const h of hits) {
         if (tombstones.has(h.vaneId) || h.score < floor) continue;
@@ -56,6 +72,7 @@ export class SearchService {
         if (!occ) continue;
         const meta = this.deps.resolve(occ);
         if (!meta) continue;
+        if (opts?.excludePath && meta.path === opts.excludePath) continue;
         const cur = byNote.get(meta.path);
         if (!cur || h.score > cur.score) {
           byNote.set(meta.path, { path: meta.path, breadcrumb: meta.breadcrumb, score: h.score });

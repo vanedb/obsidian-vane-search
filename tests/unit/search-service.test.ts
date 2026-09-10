@@ -84,6 +84,21 @@ describe('SearchService', () => {
     expect(await svc.search('x')).toEqual([]);
   });
 
+  it('searchVector: groups/floors/excludes on a raw vector, no embedding call', async () => {
+    const { client } = cannedClient([
+      { vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.8 }, { vaneId: 2, score: 0.4 },
+    ], 3);
+    const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0', 2: 'c.md#0' });
+    const throwingProvider: EmbeddingProvider = {
+      id: 'fake', model: 'feature-hash-v1', dimension: () => 64, maxBatch: () => 512,
+      embed: () => { throw new Error('searchVector must not embed'); },
+    };
+    const svc = new SearchService({ getProvider: () => throwingProvider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => gen, floor: 0.5 });
+    const results = await svc.searchVector(new Float32Array(64), 20, { excludePath: 'b.md' });
+    // b.md (0.8) is excluded despite clearing the floor; c.md (0.4) is dropped by the floor.
+    expect(results).toEqual([{ path: 'a.md', breadcrumb: 'a', score: 0.9 }]);
+  });
+
   it('rejects with ProviderMismatchError and never embeds when the live provider fingerprint differs from the generation', async () => {
     const { client } = cannedClient([{ vaneId: 0, score: 0.9 }], 1);
     const gen = genWith({ 0: 'a.md#0' }); // genWith → embeddingFingerprint: 'f'

@@ -16,6 +16,7 @@ import { runFullIndex, type FileSource } from './indexer/full-index';
 import { loadGenerationIntoIndex } from './indexer/load-generation';
 import { SearchService, type ChunkMeta } from './search/search-service';
 import { VaneSearchModal } from './ui/search-modal';
+import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui/related-notes-view';
 import { DEFAULT_SETTINGS, buildProvider, isLocalHost, type VaneSettings } from './settings/settings';
 import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
 import { ConsentModal, needsConsent } from './ui/consent-modal';
@@ -54,6 +55,12 @@ export default class VaneSearchPlugin extends Plugin {
       name: 'Find notes similar to selection',
       editorCallback: (editor: Editor) => this.searchSelection(editor),
     });
+    this.addCommand({
+      id: 'open-related',
+      name: 'Open related notes panel',
+      callback: () => void this.openRelatedPanel(),
+    });
+    this.registerView(RELATED_VIEW_TYPE, (leaf) => new RelatedNotesView(leaf, this.relatedNotesHost()));
     this.addSettingTab(new VaneSettingsTab(this.app, this, this.settingsHost()));
     this.addRibbonIcon('search', 'Vane Search: search vault', () => this.openSearch());
     this.statusEl = this.addStatusBarItem();
@@ -72,6 +79,7 @@ export default class VaneSearchPlugin extends Plugin {
 
   onunload() {
     this.unloaded = true;
+    this.app.workspace.detachLeavesOfType(RELATED_VIEW_TYPE);
     this.worker?.terminate();
     this.db?.close();
   }
@@ -145,6 +153,24 @@ export default class VaneSearchPlugin extends Plugin {
     if (!selection.trim()) { new Notice('Vane Search: select some text first'); return; }
     if (!this.search) { new Notice('Vane Search is still starting'); return; }
     new VaneSearchModal(this.app, this.search, () => this.status, selection).open();
+  }
+
+  private relatedNotesHost(): RelatedNotesHost {
+    return {
+      getDb: () => this.db,
+      getGen: () => this.gen,
+      getClient: () => this.client,
+      getSearch: () => this.search,
+    };
+  }
+
+  private async openRelatedPanel() {
+    const existing = this.app.workspace.getLeavesOfType(RELATED_VIEW_TYPE);
+    if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) { new Notice('Vane Search: could not open the related-notes panel'); return; }
+    await leaf.setViewState({ type: RELATED_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
   }
 
   private vaultId(): string {
