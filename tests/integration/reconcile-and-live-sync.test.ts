@@ -11,7 +11,7 @@ import { MemoryVaneIndex } from '../../src/index/memory-vane-index';
 import { capacityFor } from '../../src/index/vane-index';
 import { FakeEmbeddingProvider } from '../../src/providers/fake';
 import { embeddingFingerprint } from '../../src/providers/embedding-provider';
-import { CHUNKER_VERSION, type ChunkRow } from '../../src/chunker/whole-file';
+import { CHUNKER_VERSION, type ChunkRow } from '../../src/chunker/chunker';
 import { runFullIndex, type FileSource } from '../../src/indexer/full-index';
 import { loadGenerationIntoIndex } from '../../src/indexer/load-generation';
 import { reconcileDeletions, removePaths } from '../../src/indexer/reconcile';

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect } from 'vitest';
 import { openVaneDb } from '../../src/storage/vane-db';
 import {
-  newGeneration, saveGeneration, loadActiveGeneration, activateGeneration,
+  newGeneration, saveGeneration, loadActiveGeneration, activateGeneration, nextGenerationNumber,
 } from '../../src/storage/generation-store';
 
 const OPTS = { embeddingFingerprint: 'fake:feature-hash-v1:64:c0', graphFingerprint: 'dot:m16:ef200', dim: 64 };
@@ -56,5 +56,19 @@ describe('generation store', () => {
     expect(back?.tombstones).toEqual([0]);
     expect(back?.nextVaneId).toBe(2);
     expect(back?.dim).toBe(64);
+  });
+
+  it('nextGenerationNumber: 1 on an empty store', async () => {
+    expect(await nextGenerationNumber(await freshDb())).toBe(1);
+  });
+
+  it('nextGenerationNumber: max+1 across active AND building rows, not just the active one', async () => {
+    const db = await freshDb();
+    const g3 = newGeneration(3, OPTS);
+    await activateGeneration(db, g3);
+    // A stray 'building' row left behind by a crashed rebuild, numbered HIGHER than active.
+    const g5 = newGeneration(5, OPTS);
+    await saveGeneration(db, g5); // never activated
+    expect(await nextGenerationNumber(db)).toBe(6); // max(3, 5) + 1 — the active number alone would wrongly give 4
   });
 });

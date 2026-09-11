@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { meanVector } from '../../src/ui/related-notes-view';
+import { meanVector, isExcludedByFolder } from '../../src/ui/related-notes-view';
 
 describe('meanVector', () => {
   it('returns the vector unchanged when given a single vector', () => {
@@ -19,5 +19,31 @@ describe('meanVector', () => {
     meanVector([a, b], 3);
     expect([...a]).toEqual([1, 2, 3]);
     expect([...b]).toEqual([5, 6, 7]);
+  });
+});
+
+describe('isExcludedByFolder', () => {
+  it('does not exclude anything when the folder is empty', () => {
+    expect(isExcludedByFolder('Daily/2026-09-08.md', '')).toBe(false);
+  });
+
+  it('excludes a note inside the folder', () => {
+    expect(isExcludedByFolder('Daily/2026-09-08.md', 'Daily')).toBe(true);
+  });
+
+  it('excludes a note inside the folder when the setting has a trailing slash', () => {
+    expect(isExcludedByFolder('Daily/2026-09-08.md', 'Daily/')).toBe(true);
+  });
+
+  it('excludes a note in a nested subfolder of the excluded folder', () => {
+    expect(isExcludedByFolder('Daily/2026/09-08.md', 'Daily')).toBe(true);
+  });
+
+  it('does not exclude a note outside the folder', () => {
+    expect(isExcludedByFolder('Projects/Daily-standup.md', 'Daily')).toBe(false);
+  });
+
+  it('does not exclude a note with a merely similar-prefixed name', () => {
+    expect(isExcludedByFolder('DailyNotes/foo.md', 'Daily')).toBe(false);
   });
 });

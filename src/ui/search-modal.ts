@@ -1,6 +1,6 @@
 import { App, SuggestModal, TFile } from 'obsidian';
 import { ProviderMismatchError, type SearchService, type NoteResult } from '../search/search-service';
-import { openNoteOrNotice } from './open-note';
+import { headingFromBreadcrumb, openNoteOrNotice } from './open-note';
 import { RequestGate } from './request-gate';
 
 const DEBOUNCE_MS = 300;
@@ -89,6 +89,6 @@ export class VaneSearchModal extends SuggestModal<SearchResult> {
   }
 
   onChooseSuggestion(r: SearchResult, evt: MouseEvent | KeyboardEvent): void {
-    openNoteOrNotice(this.app, r.path, !!(evt && (evt.metaKey || evt.ctrlKey)));
+    openNoteOrNotice(this.app, r.path, !!(evt && (evt.metaKey || evt.ctrlKey)), headingFromBreadcrumb(r.breadcrumb));
   }
 }

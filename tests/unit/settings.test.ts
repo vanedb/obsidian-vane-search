@@ -11,6 +11,7 @@ describe('settings', () => {
     expect(DEFAULT_SETTINGS.docPrefix).toBe('');
     expect(DEFAULT_SETTINGS.queryPrefix).toBe('');
     expect(DEFAULT_SETTINGS.hasApiKey).toBe(false);
+    expect(DEFAULT_SETTINGS.relatedExcludeFolder).toBe('');
   });
 
   it('the Ollama preset stays available for local use', () => {

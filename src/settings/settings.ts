@@ -15,6 +15,8 @@ export interface VaneSettings {
   consentedHosts: string[];
   /** Minimum similarity score (0-1) a chunk must meet to count toward a result. 0 = off (show all). */
   minScore: number;
+  /** Folder path (e.g. a daily-notes folder) whose notes are hidden from the Related-notes panel. '' = no exclusion. Still findable via search. */
+  relatedExcludeFolder: string;
 }
 
 export interface Preset {
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: VaneSettings = {
   maxBatch: 64,
   consentedHosts: [],
   minScore: 0,
+  relatedExcludeFolder: '',
 };
 
 export function isLocalHost(baseUrl: string): boolean {

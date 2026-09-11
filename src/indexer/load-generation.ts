@@ -1,7 +1,7 @@
 import { reqAsPromise, type VectorRow } from '../storage/vane-db';
 import type { GenerationRecord } from '../storage/generation-store';
 import type { IndexClient } from '../index/index-client';
-import type { ChunkRow } from '../chunker/whole-file';
+import type { ChunkRow } from '../chunker/chunker';
 
 const BATCH = 256;
 

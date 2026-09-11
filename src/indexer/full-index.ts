@@ -2,7 +2,7 @@ import { getVectors, reqAsPromise, txDone, type FileRow, type VectorRow } from '
 import type { GenerationRecord } from '../storage/generation-store';
 import { embeddingFingerprint, type EmbeddingProvider } from '../providers/embedding-provider';
 import type { IndexClient } from '../index/index-client';
-import { chunkWholeFile, CHUNKER_VERSION, type ChunkRow } from '../chunker/whole-file';
+import { chunkNote, CHUNKER_VERSION, type ChunkRow } from '../chunker/chunker';
 import { hash64 } from '../hash';
 
 export interface FileMeta { path: string; mtime: number; size: number }
@@ -45,8 +45,19 @@ export async function runFullIndex(deps: {
   client: IndexClient;
   gen: GenerationRecord;
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Skip the per-file `generations.put(gen)` and commit the generation ONCE after the whole
+   * run instead. Only valid for a `gen.state === 'building'` record that has not been
+   * activated yet (the from-scratch/rebuild path in main.ts's `buildGenerationInNewWorker`):
+   * a crash before that final put leaves content-addressed vectors/chunks rows as harmless
+   * orphans, and any files-rows already written are stamped with a generation number that
+   * never becomes active, so every later run's skip-check ignores them — the whole build is
+   * simply retried. Per-file durability is required for an ALREADY-ACTIVE generation
+   * (incremental indexing), where this must stay false (the default).
+   */
+  deferGenerationCommit?: boolean;
 }): Promise<{ indexed: number; skipped: number }> {
-  const { db, source, provider, client, gen } = deps;
+  const { db, source, provider, client, gen, deferGenerationCommit = false } = deps;
 
   // Backstop against writing a vector row keyed by `gen.embeddingFingerprint` that was
   // actually produced by a DIFFERENT provider (e.g. the live single-file reindex path
@@ -56,6 +67,11 @@ export async function runFullIndex(deps: {
   const providerFp = embeddingFingerprint(provider, CHUNKER_VERSION);
   if (providerFp !== gen.embeddingFingerprint) {
     throw new Error('Vane Search: provider/generation fingerprint mismatch — rebuild the index');
+  }
+  // Belt-and-suspenders, same spirit as the fingerprint guard above: per-file durability is
+  // required once a generation is active, so deferral must never apply to one.
+  if (deferGenerationCommit && gen.state !== 'building') {
+    throw new Error('Vane Search: deferGenerationCommit is only valid for a building generation');
   }
 
   const files = source.list();
@@ -68,7 +84,25 @@ export async function runFullIndex(deps: {
     (await reqAsPromise<ChunkRow[]>(db.transaction('chunks').objectStore('chunks').getAll())).map((r) => [r.occurrenceId, r]),
   );
   const rev = new Map<string, number>(); // occurrenceId → vaneId
-  for (const [vid, occ] of Object.entries(gen.idMap)) rev.set(occ, Number(vid));
+  // path → vaneIds occurring under it, kept in sync with gen.idMap/rev everywhere they're
+  // mutated below. Turns the per-file "which of this file's occurrences vanished?" reconcile
+  // scan from O(whole idMap) into O(this file's own occurrences).
+  const pathToVaneIds = new Map<string, Set<number>>();
+  const occPath = (occ: string) => occ.slice(0, occ.lastIndexOf('#'));
+  const indexOcc = (occ: string, vaneId: number) => {
+    const path = occPath(occ);
+    let set = pathToVaneIds.get(path);
+    if (!set) { set = new Set(); pathToVaneIds.set(path, set); }
+    set.add(vaneId);
+  };
+  const unindexOcc = (occ: string, vaneId: number) => {
+    const path = occPath(occ);
+    const set = pathToVaneIds.get(path);
+    if (!set) return;
+    set.delete(vaneId);
+    if (set.size === 0) pathToVaneIds.delete(path);
+  };
+  for (const [vid, occ] of Object.entries(gen.idMap)) { rev.set(occ, Number(vid)); indexOcc(occ, Number(vid)); }
 
   let indexed = 0, skipped = 0, done = 0;
 
@@ -83,12 +117,20 @@ export async function runFullIndex(deps: {
       // The generation check matters: after a provider/chunker change the new
       // generation starts empty, and a files row from the OLD generation must not
       // satisfy the skip even though mtime/size never moved.
-      if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size) {
+      // Belt-and-suspenders against generation-number collisions (e.g. a crashed full rebuild
+      // whose files-rows were stamped with a generation number a later build reuses): even
+      // when generation/mtime/size all match, only skip if this file actually has a LIVE
+      // mapping in the current `idMap` — a matching files-row with no live occurrence is
+      // exactly the collision case (or any other drift), and must be re-indexed instead of
+      // silently skipped.
+      const hasLiveMapping = (pathToVaneIds.get(f.path)?.size ?? 0) > 0;
+      if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size
+        && hasLiveMapping) {
         skipped++; deps.onProgress?.(++done, files.length); continue;
       }
 
       const content = await source.read(f.path);
-      const chunks = chunkWholeFile(f.path, content);
+      const chunks = chunkNote(f.path, content);
       const changed: ChunkEntry[] = [];
       for (const c of chunks) {
         const oldRow = chunkRows.get(c.row.occurrenceId);
@@ -157,14 +199,16 @@ export async function runFullIndex(deps: {
         await client.insert(entries);
 
         // Only now — insert succeeded — apply the tombstones, idMap changes, and the
-        // id counter advance, both in `gen` and in the local `rev` map.
+        // id counter advance, both in `gen` and in the local `rev`/`pathToVaneIds` maps.
         for (const { old, vaneId, occurrenceId } of planned) {
           if (old !== undefined) {
             gen.tombstones.push(old);
             delete gen.idMap[old];
+            unindexOcc(occurrenceId, old); // same occurrenceId as the new entry — same path
           }
           gen.idMap[vaneId] = occurrenceId;
           rev.set(occurrenceId, vaneId);
+          indexOcc(occurrenceId, vaneId);
         }
         gen.nextVaneId = nextId;
         indexed++;
@@ -179,31 +223,48 @@ export async function runFullIndex(deps: {
       // for this file's changed chunks has already resolved by this point, so
       // it's safe to mutate `gen` — same invariant Step 2 above follows.
       const currentOccurrenceIds = new Set(chunks.map((c) => c.row.occurrenceId));
-      const prefix = `${f.path}#`;
       const staleOccurrenceIds: string[] = [];
-      for (const [vaneIdStr, occ] of Object.entries(gen.idMap)) {
-        if (!occ.startsWith(prefix) || currentOccurrenceIds.has(occ)) continue;
-        const vaneId = Number(vaneIdStr);
-        gen.tombstones.push(vaneId);
-        delete gen.idMap[vaneId];
-        rev.delete(occ);
-        staleOccurrenceIds.push(occ);
+      // Only this file's own vaneIds (via pathToVaneIds) instead of a full idMap scan.
+      const candidateVaneIds = pathToVaneIds.get(f.path);
+      if (candidateVaneIds) {
+        for (const vaneId of [...candidateVaneIds]) {
+          const occ = gen.idMap[vaneId];
+          if (occ === undefined || currentOccurrenceIds.has(occ)) continue;
+          gen.tombstones.push(vaneId);
+          delete gen.idMap[vaneId];
+          rev.delete(occ);
+          unindexOcc(occ, vaneId);
+          staleOccurrenceIds.push(occ);
+        }
       }
 
       // Step 3: files row + generation record — the atomic "this file is indexed" commit.
       // Stale chunk rows are derived cache, but dropping them in the same transaction
       // keeps the durable store consistent with the generation record in one commit.
-      const tx2 = db.transaction(['files', 'generations', 'chunks'], 'readwrite');
+      // With `deferGenerationCommit`, the generation record commits ONCE after the whole run
+      // instead (see the doc comment on the option) — the files row + stale-chunk deletes
+      // still commit per file exactly as before.
+      const tx2 = db.transaction(
+        deferGenerationCommit ? ['files', 'chunks'] : ['files', 'generations', 'chunks'], 'readwrite');
       for (const occ of staleOccurrenceIds) tx2.objectStore('chunks').delete(occ);
       tx2.objectStore('files').put({
         path: f.path, mtime: f.mtime, size: f.size,
         contentHash: hash64(content), generation: gen.generation,
       } satisfies FileRow);
-      tx2.objectStore('generations').put(gen);
+      if (!deferGenerationCommit) tx2.objectStore('generations').put(gen);
       await txDone(tx2);
 
       deps.onProgress?.(++done, files.length);
     }
+  }
+
+  if (deferGenerationCommit) {
+    // The single deferred generation commit for the whole run — see the doc comment on the
+    // option. Harmless even if nothing changed: writing the same (or still-empty) record back
+    // is idempotent, and it's about to be superseded by activateGeneration on success anyway.
+    const tx = db.transaction('generations', 'readwrite');
+    tx.objectStore('generations').put(gen);
+    await txDone(tx);
   }
   return { indexed, skipped };
 }

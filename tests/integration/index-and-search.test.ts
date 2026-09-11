@@ -3,15 +3,17 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initWasm } from '../helpers/wasm';
 import { loopbackTransport } from '../helpers/loopback';
 import { MemoryFileSource } from '../helpers/memory-files';
-import { openVaneDb, reqAsPromise, txDone } from '../../src/storage/vane-db';
-import { newGeneration, saveGeneration, activateGeneration, loadActiveGeneration } from '../../src/storage/generation-store';
+import { openVaneDb, reqAsPromise, txDone, type FileRow } from '../../src/storage/vane-db';
+import {
+  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, type GenerationRecord,
+} from '../../src/storage/generation-store';
 import { createIndexHost } from '../../src/index/index-host';
 import { IndexClient } from '../../src/index/index-client';
 import { MemoryVaneIndex } from '../../src/index/memory-vane-index';
 import { capacityFor } from '../../src/index/vane-index';
 import { FakeEmbeddingProvider } from '../../src/providers/fake';
 import { embeddingFingerprint } from '../../src/providers/embedding-provider';
-import { CHUNKER_VERSION } from '../../src/chunker/whole-file';
+import { CHUNKER_VERSION } from '../../src/chunker/chunker';
 import { runFullIndex } from '../../src/indexer/full-index';
 import { loadGenerationIntoIndex } from '../../src/indexer/load-generation';
 
@@ -156,6 +158,12 @@ describe('runFullIndex', () => {
     // The surviving occurrence is live and searchable with the new content.
     expect(Object.values(gen.idMap)).toContain('big.md#0');
     expect((await searchOccurrences(client, gen, 'houseplants watering schedule'))[0]).toBe('big.md#0');
+
+    // The path→vaneIds reconcile index scopes the scan to big.md only — the other setup
+    // files' occurrences must be completely untouched by the reconcile pass above.
+    expect(Object.values(gen.idMap)).toEqual(
+      expect.arrayContaining(['coffee.md#0', 'k8s.md#0', 'bread.md#0', 'big.md#0']));
+    expect(Object.values(gen.idMap)).toHaveLength(4);
   });
 
   it('a NEW generation re-indexes unchanged files (no stale mtime/size skip)', async () => {
@@ -230,6 +238,131 @@ describe('runFullIndex', () => {
     expect(mismatched.nextVaneId).toBe(0);
     const vectorRows = await reqAsPromise(db.transaction('vectors').objectStore('vectors').getAll());
     expect(vectorRows).toEqual([]);
+  });
+});
+
+describe('deferGenerationCommit', () => {
+  async function setupDb(name: string) {
+    const db = await openVaneDb(name);
+    const source = new MemoryFileSource();
+    source.set('coffee.md', 'v60 pourover brewing ratios and grind size');
+    source.set('k8s.md', 'kubernetes cluster upgrade checklist and rollback');
+    source.set('bread.md', 'sourdough starter feeding schedule');
+    const client = freshClient();
+    await client.init(64, capacityFor(100));
+    const gen = newGeneration(1, { embeddingFingerprint: FP, graphFingerprint: GRAPH_FP, dim: 64 }); // state: 'building'
+    await saveGeneration(db, gen);
+    return { db, source, client, gen };
+  }
+
+  it('true: the generations store is untouched per file, then committed once with the correct final state', async () => {
+    const { db, source, client, gen } = await setupDb(`defer-true-${n++}`);
+
+    // Kick off a fresh read of the persisted row after every per-file commit; these promises
+    // are awaited only after the whole run finishes, but each snapshot's transaction is
+    // created synchronously inside onProgress, so it captures the store's state at that point
+    // in the (strictly sequential, awaited) per-file loop.
+    const midRunReads: Promise<GenerationRecord | undefined>[] = [];
+    const res = await runFullIndex({
+      db, source, provider, client, gen, deferGenerationCommit: true,
+      onProgress: () => {
+        midRunReads.push(reqAsPromise<GenerationRecord | undefined>(
+          db.transaction('generations').objectStore('generations').get(gen.generation)));
+      },
+    });
+    expect(res).toEqual({ indexed: 3, skipped: 0 });
+
+    // Every mid-run snapshot still shows the pre-run EMPTY state — no per-file put happened.
+    const snapshots = await Promise.all(midRunReads);
+    expect(snapshots).toHaveLength(3);
+    for (const snap of snapshots) expect(snap?.idMap).toEqual({});
+
+    // After the run, the store holds exactly the correct FINAL state — one commit, not zero.
+    const persisted = await reqAsPromise<GenerationRecord | undefined>(
+      db.transaction('generations').objectStore('generations').get(gen.generation));
+    expect(persisted).toEqual(gen);
+    expect(Object.keys(persisted!.idMap)).toHaveLength(3);
+  });
+
+  it('false (default): each file commits files+generation together immediately, growing the store per file', async () => {
+    const { db, source, client, gen } = await setupDb(`defer-false-${n++}`);
+
+    const midRunSizes: Promise<number>[] = [];
+    const res = await runFullIndex({
+      db, source, provider, client, gen, // deferGenerationCommit omitted — default false
+      onProgress: () => {
+        midRunSizes.push(reqAsPromise<GenerationRecord | undefined>(
+          db.transaction('generations').objectStore('generations').get(gen.generation),
+        ).then((row) => Object.keys(row?.idMap ?? {}).length));
+      },
+    });
+    expect(res).toEqual({ indexed: 3, skipped: 0 });
+    const sizes = await Promise.all(midRunSizes);
+    expect(sizes).toEqual([1, 2, 3]); // grows one occurrence per file, persisted immediately
+  });
+
+  it('produces the same final generation and search results as the default (per-file) path', async () => {
+    async function run(defer: boolean) {
+      const { db, source, client, gen } = await setupDb(`defer-cmp-${defer}-${n++}`);
+      const res = await runFullIndex({ db, source, provider, client, gen, deferGenerationCommit: defer });
+      const hit = await searchOccurrences(client, gen, 'sourdough starter feeding schedule');
+      return { res, gen, hit };
+    }
+    const deferred = await run(true);
+    const perFile = await run(false);
+    expect(deferred.res).toEqual(perFile.res);
+    expect(deferred.gen.idMap).toEqual(perFile.gen.idMap);
+    expect(deferred.gen.tombstones).toEqual(perFile.gen.tombstones);
+    expect(deferred.gen.nextVaneId).toBe(perFile.gen.nextVaneId);
+    expect(deferred.hit).toEqual(perFile.hit);
+  });
+
+  it('refuses to defer the commit for an already-active generation', async () => {
+    const { db, source, client, gen } = await setupDb(`defer-active-${n++}`);
+    await activateGeneration(db, gen); // state: 'active'
+    await expect(runFullIndex({ db, source, provider, client, gen, deferGenerationCommit: true }))
+      .rejects.toThrow(/deferGenerationCommit is only valid for a building generation/);
+  });
+});
+
+describe('crash-collision skip guard (idMap-presence in the skip-check)', () => {
+  it('a files-row matching generation+mtime+size but with NO live idMap mapping is re-indexed, not skipped', async () => {
+    const db = await openVaneDb(`collision-${n++}`);
+    const source = new MemoryFileSource();
+    source.set('coffee.md', 'v60 pourover brewing ratios and grind size');
+    const client = freshClient();
+    await client.init(64, capacityFor(100));
+
+    // Simulate the aftermath of a crashed full rebuild whose generation number got reused: a
+    // files-row committed under generation 2 (e.g. via deferGenerationCommit, which writes the
+    // files row per file without a matching per-file gen commit), but the crashed attempt's own
+    // 'building' generation 2 never activated — so THIS run's fresh `gen` (also numbered 2, the
+    // exact collision `nextGenerationNumber` now prevents at the main.ts level) starts with an
+    // EMPTY idMap: no live mapping for coffee.md, even though the files-row claims it's already
+    // indexed under this exact generation/mtime/size.
+    const f = source.list()[0];
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put({
+      path: 'coffee.md', mtime: f.mtime, size: f.size, contentHash: 'stale-from-crashed-attempt', generation: 2,
+    } satisfies FileRow);
+    await txDone(tx);
+
+    const gen = newGeneration(2, { embeddingFingerprint: FP, graphFingerprint: GRAPH_FP, dim: 64 });
+    await saveGeneration(db, gen); // empty idMap — this run's own fresh generation
+
+    const res = await runFullIndex({ db, source, provider, client, gen });
+    expect(res).toEqual({ indexed: 1, skipped: 0 }); // NOT skipped despite the matching files-row
+    expect(Object.values(gen.idMap)).toContain('coffee.md#0');
+    expect((await searchOccurrences(client, gen, 'pourover brewing ratios grind size'))[0]).toBe('coffee.md#0');
+  });
+
+  it('does not disturb the normal incremental skip: a genuinely-mapped unchanged file still skips', async () => {
+    const { db, source, client, gen } = await setup();
+    await runFullIndex({ db, source, provider, client, gen });
+    const before = gen.nextVaneId;
+    const res = await runFullIndex({ db, source, provider, client, gen }); // unchanged, all 3 files genuinely mapped
+    expect(res).toEqual({ indexed: 0, skipped: 3 });
+    expect(gen.nextVaneId).toBe(before);
   });
 });
 

@@ -20,7 +20,9 @@ export class ProviderMismatchError extends Error {
 export class SearchService {
   constructor(private deps: {
     getProvider: () => EmbeddingProvider;
-    client: IndexClient;
+    /** Live accessor — a background rebuild swaps in a new worker/client atomically once
+     *  it's fully built, and every search after the swap must go through the new one. */
+    getClient: () => IndexClient;
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
     getGen: () => GenerationRecord | null;
     getProviderFingerprint?: () => string | null;
@@ -31,10 +33,12 @@ export class SearchService {
   }) {}
 
   async search(query: string, limit = 20): Promise<NoteResult[]> {
-    // One gen snapshot for BOTH the fingerprint check and the grouping below — getGen() is read
-    // exactly once here. A rebuild can reassign the active generation while we `await embed(...)`;
-    // if grouping re-read getGen() afterwards it could run against a different generation than the
-    // one just checked, silently defeating the ProviderMismatchError check.
+    // gen AND client are snapshotted together here, BEFORE the embed await below. A rebuild's
+    // atomic swap can fire while we're parked on that await; if grouping read either one fresh
+    // afterwards it could pair the OLD gen (idMap/tombstones) with the NEW client's vaneIds (or
+    // vice versa) — a torn read that silently attaches scores to the wrong notes. Snapshotting
+    // both up front, and threading these exact two values through to groupHits, keeps them from
+    // ever being read at different times relative to the swap.
     const gen = this.deps.getGen();
     if (!gen) return [];
     if (this.deps.getProviderFingerprint) {
@@ -45,15 +49,16 @@ export class SearchService {
         );
       }
     }
+    const client = this.deps.getClient();
     const [qv] = await this.deps.getProvider().embed([query], 'query');
-    return this.groupHits(qv, limit, gen);
+    return this.groupHits(qv, limit, gen, client);
   }
 
   /**
    * Same grouping/floor/tombstone/widening logic as `search`, but takes a raw query vector
    * directly — no embedding call, no provider-fingerprint check. Used by callers that already
    * have a vector (e.g. a note-similarity centroid for the related-notes panel). Reads its own
-   * gen snapshot since there's no earlier check it needs to stay consistent with.
+   * paired gen+client snapshot since there's no earlier check it needs to stay consistent with.
    */
   async searchVector(
     queryVector: Float32Array,
@@ -62,14 +67,16 @@ export class SearchService {
   ): Promise<NoteResult[]> {
     const gen = this.deps.getGen();
     if (!gen) return [];
-    return this.groupHits(queryVector, limit, gen, opts);
+    const client = this.deps.getClient();
+    return this.groupHits(queryVector, limit, gen, client, opts);
   }
 
-  /** The widening/group/floor/tombstone loop, against a caller-supplied gen snapshot. */
+  /** The widening/group/floor/tombstone loop, against a caller-supplied, paired gen+client snapshot. */
   private async groupHits(
     queryVector: Float32Array,
     limit: number,
     gen: GenerationRecord,
+    client: IndexClient,
     opts?: { excludePath?: string },
   ): Promise<NoteResult[]> {
     const tombstones = new Set(gen.tombstones);
@@ -78,7 +85,7 @@ export class SearchService {
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
     let k = FIRST_K;
     for (let attempt = 0; ; attempt++) {
-      const hits = await this.deps.client.search(queryVector, k);
+      const hits = await client.search(queryVector, k);
       const byNote = new Map<string, NoteResult>();
       for (const h of hits) {
         if (tombstones.has(h.vaneId) || h.score < floor) continue;
@@ -93,7 +100,7 @@ export class SearchService {
         }
       }
       const notes = [...byNote.values()].sort((a, b) => b.score - a.score);
-      const { size } = await this.deps.client.stats();
+      const { size } = await client.stats();
       if (notes.length >= limit || k >= size || attempt >= MAX_WIDENINGS) {
         return notes.slice(0, limit);
       }

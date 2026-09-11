@@ -53,6 +53,9 @@ export class VaneSettingsTab extends PluginSettingTab {
       .addSlider((sl) => sl.setLimits(0, 1, 0.01).setValue(s.minScore).setDynamicTooltip()
         .onChange(async (v) => { s.minScore = v; await this.host.saveSettings(); }));
 
+    new Setting(containerEl).setName('Exclude folder from Related notes').setDesc('e.g. your daily-notes folder; leave blank for none. Notes in it are still findable via search.')
+      .addText((t) => t.setValue(s.relatedExcludeFolder).onChange(async (v) => { s.relatedExcludeFolder = v.trim(); await this.host.saveSettings(); }));
+
     new Setting(containerEl).setName('Rebuild index').setDesc('Re-embed the whole vault with the current provider.')
       .addButton((b) => b.setButtonText('Rebuild').setWarning().onClick(() => void this.host.reindex()));
   }

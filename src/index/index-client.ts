@@ -23,6 +23,9 @@ export interface Transport {
 export class IndexClient {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private seq = 0;
+  // Set by rejectInFlight and never cleared: once a client has been swapped out or its
+  // transport has fatally failed, it's retired for good — nothing re-attaches it to a worker.
+  private dead = false;
 
   constructor(private transport: Transport) {
     transport.onResponse((r) => {
@@ -31,14 +34,30 @@ export class IndexClient {
       this.pending.delete(r.id);
       r.ok ? p.resolve(r.result) : p.reject(new Error(r.error));
     });
-    transport.onFatal?.((err) => {
-      const inFlight = [...this.pending.values()];
-      this.pending.clear();
-      for (const p of inFlight) p.reject(err);
-    });
+    transport.onFatal?.((err) => this.rejectInFlight(err));
+  }
+
+  /** Rejects every pending call with `err`, clears the queue, and retires this client: any
+   *  call made AFTER this point rejects immediately instead of posting to the worker. Used
+   *  both for a fatal transport failure (worker crash, via onFatal above) and, deliberately,
+   *  when a caller is about to terminate this client's worker out from under it (e.g. a
+   *  background-rebuild swap).
+   *
+   *  Both halves matter for the swap case: a request already posted and in flight when the
+   *  swap fires needs the reject-now half, but a caller that was merely PARKED on something
+   *  else (e.g. a search still awaiting the embedding call) and only calls .search()/.stats()
+   *  on this client AFTERWARD needs the `dead` half — plain Worker.terminate() makes
+   *  postMessage a silent no-op, so without `dead` that later call would post into the void
+   *  and hang forever instead of rejecting. */
+  rejectInFlight(err: Error): void {
+    this.dead = true;
+    const inFlight = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of inFlight) p.reject(err);
   }
 
   private call(msg: DistributiveOmit<IndexRequest, 'id'>): Promise<unknown> {
+    if (this.dead) return Promise.reject(new Error('index worker no longer available'));
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

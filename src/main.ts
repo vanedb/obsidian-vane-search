@@ -1,8 +1,8 @@
 // src/main.ts
-import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon, type Debouncer } from 'obsidian';
+import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
-  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
+  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, nextGenerationNumber,
   type GenerationRecord,
 } from './storage/generation-store';
 import { IndexClient, workerTransport } from './index/index-client';
@@ -11,7 +11,7 @@ import { capacityFor } from './index/vane-index';
 import { embeddingFingerprint, type EmbeddingProvider } from './providers/embedding-provider';
 import { EmbeddingError } from './providers/openai-compat';
 import { requestUrlPost } from './providers/http';
-import { CHUNKER_VERSION, type ChunkRow } from './chunker/whole-file';
+import { CHUNKER_VERSION, type ChunkRow } from './chunker/chunker';
 import { runFullIndex, type FileSource } from './indexer/full-index';
 import { loadGenerationIntoIndex } from './indexer/load-generation';
 import { reconcileDeletions, removePaths } from './indexer/reconcile';
@@ -21,6 +21,8 @@ import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui
 import { DEFAULT_SETTINGS, buildProvider, isLocalHost, type VaneSettings } from './settings/settings';
 import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
 import { ConsentModal, needsConsent } from './ui/consent-modal';
+import { SerialQueue } from './lifecycle/serial-queue';
+import { PathScheduler } from './lifecycle/path-scheduler';
 
 const GRAPH_FINGERPRINT = 'dot:m16:ef200'; // bump on metric/params/vanedb format change
 const LIVE_DEBOUNCE_MS = 1500; // coalesce rapid edits/create bursts per path
@@ -44,9 +46,20 @@ export default class VaneSearchPlugin extends Plugin {
   private indexReady = false;
   private initDone: Promise<void> = Promise.resolve();
   /** Single serialization point: every reconcile/reindex — manual command or live vault
-   *  event — runs as one link in this chain, so none of them ever overlap. */
-  private work: Promise<void> = Promise.resolve();
-  private pathDebouncers = new Map<string, Debouncer<[], void>>();
+   *  event — runs as one link in this queue, so none of them ever overlap. Never rejects:
+   *  a failed op logs + surfaces a Notice/status and the next op still runs. */
+  private queue = new SerialQueue((e) => {
+    console.error('vane-search: background sync failed', e);
+    if (!this.unloaded) {
+      this.setStatus('sync failed — see console');
+      new Notice('Vane Search: keeping the index in sync failed — see the developer console.');
+    }
+  });
+  /** Per-path debounced live reindex; self-prunes fired entries so the map can't leak. */
+  private scheduler = new PathScheduler(
+    (fn) => { const d = debounce(fn, LIVE_DEBOUNCE_MS, true); return { trigger: () => d(), cancel: () => { d.cancel(); } }; },
+    (path) => { void this.enqueue(() => this.reindexFile(path)); },
+  );
 
   async onload() {
     await this.loadSettings();
@@ -85,8 +98,7 @@ export default class VaneSearchPlugin extends Plugin {
 
   onunload() {
     this.unloaded = true;
-    for (const d of this.pathDebouncers.values()) d.cancel();
-    this.pathDebouncers.clear();
+    this.scheduler.cancelAll();
     this.app.workspace.detachLeavesOfType(RELATED_VIEW_TYPE);
     this.worker?.terminate();
     this.db?.close();
@@ -169,6 +181,7 @@ export default class VaneSearchPlugin extends Plugin {
       getGen: () => this.gen,
       getClient: () => this.client,
       getSearch: () => this.search,
+      getRelatedExcludeFolder: () => this.vaneSettings.relatedExcludeFolder,
     };
   }
 
@@ -204,19 +217,11 @@ export default class VaneSearchPlugin extends Plugin {
     };
   }
 
-  /** Serializes `op` after every previously-enqueued op. Never rejects: an error here is
-   *  the failure mode for the whole live-sync path (manual "Index vault"/"Rebuild" keep
-   *  their own try/catch for richer messaging), so this is the catch-all — log, surface a
-   *  Notice + status, keep the chain alive for the next op. */
+  /** Serializes `op` after every previously-enqueued op via the shared queue.
+   *  Never rejects — see SerialQueue. Kept as a thin method so the many call
+   *  sites (live events, manual index) read `this.enqueue(...)`. */
   private enqueue(op: () => Promise<void>): Promise<void> {
-    this.work = this.work.then(op).catch((e) => {
-      console.error('vane-search: background sync failed', e);
-      if (!this.unloaded) {
-        this.setStatus('sync failed — see console');
-        new Notice('Vane Search: keeping the index in sync failed — see the developer console.');
-      }
-    });
-    return this.work;
+    return this.queue.enqueue(op);
   }
 
   /** Re-embeds/tombstones exactly one file via the same `runFullIndex` used for the full
@@ -252,21 +257,12 @@ export default class VaneSearchPlugin extends Plugin {
 
   private scheduleReindex(path: string) {
     if (this.unloaded) return;
-    let d = this.pathDebouncers.get(path);
-    if (!d) {
-      d = debounce(() => {
-        this.pathDebouncers.delete(path); // debounce fired — don't keep this entry around forever
-        void this.enqueue(() => this.reindexFile(path));
-      }, LIVE_DEBOUNCE_MS, true);
-      this.pathDebouncers.set(path, d);
-    }
-    d();
+    this.scheduler.schedule(path);
   }
 
   private scheduleRemove(path: string) {
     if (this.unloaded) return;
-    this.pathDebouncers.get(path)?.cancel();
-    this.pathDebouncers.delete(path);
+    this.scheduler.cancel(path); // drop any pending reindex for this path — it's gone
     void this.enqueue(() => this.removePath(path));
   }
 
@@ -292,11 +288,18 @@ export default class VaneSearchPlugin extends Plugin {
     }));
   }
 
-  private async refreshChunkMeta() {
-    if (!this.db) return;
+  /** Reads chunkMeta from `chunks` without touching `this.chunkMeta` — used by the full-rebuild
+   *  swap to compute the new map BEFORE installing it, so gen/client/chunkMeta can be assigned
+   *  together in one synchronous block instead of chunkMeta lagging behind via a later await. */
+  private async loadChunkMeta(): Promise<Map<string, ChunkMeta>> {
+    if (!this.db) return new Map();
     const rows = await reqAsPromise<ChunkRow[]>(
       this.db.transaction('chunks').objectStore('chunks').getAll());
-    this.chunkMeta = new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+    return new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+  }
+
+  private async refreshChunkMeta() {
+    this.chunkMeta = await this.loadChunkMeta();
   }
 
   private async initialize() {
@@ -317,7 +320,7 @@ export default class VaneSearchPlugin extends Plugin {
 
     this.search = new SearchService({
       getProvider: () => this.provider,
-      client: this.client,
+      getClient: () => this.client!,
       resolve: (occ) => this.chunkMeta.get(occ),
       getGen: () => this.gen,
       getProviderFingerprint: () => embeddingFingerprint(this.provider, CHUNKER_VERSION),
@@ -350,6 +353,40 @@ export default class VaneSearchPlugin extends Plugin {
     this.registerVaultSync();
   }
 
+  /**
+   * Builds `buildGen` to completion in a brand-new worker/client — spawn, init, runFullIndex —
+   * and returns them. Never touches `this.worker`/`this.client`/`this.gen`: the OLD ones keep
+   * serving search for the whole call. Throws (after terminating the build worker) on any
+   * failure — embedding error, fingerprint guard in runFullIndex, worker crash, or the plugin
+   * unloading mid-build — so the caller's try/catch is the single place that decides what a
+   * failure means; this helper's only job on failure is "don't leak the worker".
+   */
+  private async buildGenerationInNewWorker(
+    buildGen: GenerationRecord,
+  ): Promise<{ worker: Worker; client: IndexClient; res: { indexed: number; skipped: number } }> {
+    const worker = spawnIndexWorker();
+    if (this.unloaded) { worker.terminate(); throw new Error('vane-search: unloaded during rebuild'); }
+    const client = new IndexClient(workerTransport(worker));
+    try {
+      await client.init(buildGen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+      if (this.unloaded) throw new Error('vane-search: unloaded during rebuild');
+      const res = await runFullIndex({
+        db: this.db!, source: this.fileSource(), provider: this.provider,
+        client, gen: buildGen,
+        onProgress: (done, total) => this.setStatus(`rebuilding ${done}/${total}`),
+        // buildGen is a brand-new 'building' generation, never activated until this whole
+        // rebuild succeeds — see runFullIndex's doc comment on the option for why per-file
+        // durability isn't needed here (a crash just means "retry the whole rebuild").
+        deferGenerationCommit: true,
+      });
+      if (this.unloaded) throw new Error('vane-search: unloaded during rebuild');
+      return { worker, client, res };
+    } catch (e) {
+      worker.terminate();
+      throw e;
+    }
+  }
+
   private async indexVault(force = false) {
     await this.initDone;
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
@@ -380,25 +417,80 @@ export default class VaneSearchPlugin extends Plugin {
         // Settings may have changed since the provider was last built (e.g. via the settings tab).
         this.provider = this.makeProvider();
         const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
-        if (!this.gen || this.gen.embeddingFingerprint !== fp || force) {
-          this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
+        const isFullRebuild = force || !this.gen || this.gen.embeddingFingerprint !== fp;
+
+        let res: { indexed: number; skipped: number };
+        if (isFullRebuild) {
+          // Full rebuild: build the new generation in a SECOND worker while the OLD worker +
+          // OLD `this.gen` keep serving search. Only on success do we activate + swap; on any
+          // failure the old worker/gen/client are untouched, so a failed rebuild leaves the
+          // plugin exactly as it was.
+          // Derived from the store's own max generation number (see nextGenerationNumber's
+          // doc comment), not `this.gen.generation + 1` — saveGeneration below persists this
+          // row BEFORE the build starts, so a crashed attempt's `building` row survives and a
+          // retry's nextGenerationNumber() picks one past it, never reusing this attempt's number.
+          const buildGen = newGeneration(await nextGenerationNumber(this.db!),
             { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
-          await saveGeneration(this.db!, this.gen);
-          this.indexReady = false; // force the re-init below even if a later branch is added
+          await saveGeneration(this.db!, buildGen);
+
+          const built = await this.buildGenerationInNewWorker(buildGen);
+          res = built.res;
+
+          // Everything from here to the synchronous swap below can still fail (activateGeneration
+          // rejects — realistically onunload closed this.db mid-rebuild — or this.unloaded flips
+          // true while we await): any throw in this block must terminate the freshly-built worker
+          // exactly once, since it was never installed as `this.worker` and nothing else owns it.
+          try {
+            await activateGeneration(this.db!, buildGen);
+            // Computed BEFORE the swap, while the OLD worker/gen still serve — so gen, client,
+            // and chunkMeta can all be assigned together in one synchronous block below instead
+            // of chunkMeta lagging behind via a later `await refreshChunkMeta()` (a search in that
+            // gap would resolve the NEW gen's occurrenceIds against the STALE chunkMeta map).
+            const newChunkMeta = await this.loadChunkMeta();
+
+            // Atomic swap: search reads `this.client`/`this.gen` live (SearchService.getClient/
+            // getGen, snapshotted together per search), so from here on every search transparently
+            // hits the newly-built index — gen, client, and chunkMeta all change in the same tick.
+            const oldWorker = this.worker;
+            const oldClient = this.client;
+            this.worker = built.worker;
+            this.client = built.client;
+            this.gen = buildGen;
+            this.chunkMeta = newChunkMeta;
+            this.indexReady = true;
+
+            if (this.unloaded) {
+              // onunload may have already run during one of the awaits above — it only terminates
+              // whatever `this.worker` was AT THAT TIME (the old one), so the build worker we just
+              // installed would otherwise leak with nothing left to terminate it.
+              this.worker.terminate();
+              this.worker = null;
+            } else {
+              // A search still parked on the OLD client (e.g. mid-embed when the swap fired) must
+              // reject cleanly instead of hanging forever once its worker is gone — plain
+              // Worker.terminate() fires neither onmessage nor onerror, so nothing else would
+              // ever settle that pending call.
+              oldClient?.rejectInFlight(new Error('vane-search: index worker swapped'));
+              oldWorker?.terminate();
+            }
+          } catch (e) {
+            built.worker.terminate();
+            throw e;
+          }
+        } else {
+          // Incremental: fingerprint unchanged, same generation — insert straight into the
+          // current serving worker, exactly as before. No second worker, no swap.
+          res = await runFullIndex({
+            db: this.db!, source: this.fileSource(), provider: this.provider,
+            client: this.client!, gen: this.gen!,
+            onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+          });
+          await activateGeneration(this.db!, this.gen!);
+          await this.refreshChunkMeta();
         }
-        if (!this.indexReady) {
-          await this.client!.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
-          this.indexReady = true;
-        }
-        const res = await runFullIndex({
-          db: this.db!, source: this.fileSource(), provider: this.provider,
-          client: this.client!, gen: this.gen,
-          onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
-        });
-        await activateGeneration(this.db!, this.gen);
-        await this.refreshChunkMeta();
+
         if (!this.unloaded) {
-          this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+          this.setStatus(`ready (${Object.keys(this.gen!.idMap).length} chunks)`);
           new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
         }
       } catch (e) {
