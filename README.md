@@ -20,8 +20,14 @@ After enabling, set an embedding provider (below) before your first index.
 ## Try it on a real vault
 
 Use Obsidian 1.11.4 or later on desktop, with a separate test vault or a copy
-of your notes. The following is a walkthrough to run, not a recorded search
-result; release verification is tracked in [the 0.2.0 checklist](docs/releases/0.2.0.md).
+of your notes. On September 23, 2026, this walkthrough passed in the real
+Obsidian desktop app using six synthetic notes and local Ollama. The query
+**How should I care for young vegetables?** returned **Weekend garden** first
+(displayed score 68%), and selecting it opened the intended note. The same
+results survived quitting and relaunching Obsidian; edits and deletion were
+also reflected in search. See the [acceptance record](docs/releases/0.2.0-desktop-acceptance.md)
+for the exact build, model, full results, and limits. Official publication is
+still tracked separately in [the 0.2.0 checklist](docs/releases/0.2.0.md).
 
 1. Install Vane Search using BRAT or the manual instructions above. For a
    source build, run `npm ci && npm run build`, then
@@ -30,17 +36,16 @@ result; release verification is tracked in [the 0.2.0 checklist](docs/releases/0
 3. Under **Settings → Vane Search**, choose **Ollama · nomic-embed-text
    (English)** (`http://localhost:11434/v1`, 768 dimensions). Click **Test
    connection** and confirm it succeeds before indexing.
-4. Pick a note whose subject you know. For a small reproducible example, create
-   `Weekend garden.md` containing: “The tomato seedlings need a sunny spot.
-   Water their roots each morning and move them into larger pots when the
-   current containers become crowded.” Keep several unrelated notes in the
-   vault too.
+4. Copy the six [synthetic fixture notes](docs/releases/fixtures/0.2.0/) into
+   the test vault. `Weekend garden.md` describes caring for tomato seedlings;
+   the other notes cover unrelated subjects.
 5. Open the command palette and run **Vane Search: Index new and changed
    notes**. Wait for indexing to finish, then run **Vane Search: Search vault
    semantically** and enter **How should I care for young vegetables?**
-6. Check whether `Weekend garden.md` appears among the relevant results and
-   select it to verify the correct note opens. Ranking depends on the model
-   and the rest of the vault; this example does not promise a particular rank.
+6. Select `Weekend garden.md` to verify the correct note opens. In the recorded
+   six-note run it ranked first, followed by Cycling maintenance and Piano
+   practice. Ranking and displayed scores can change with the model or vault
+   contents; the observed result is not a guarantee for other vaults.
 
 With the local Ollama preset, note text is sent only to the service on your
 machine. A connection failure usually means Ollama is stopped, the model has
