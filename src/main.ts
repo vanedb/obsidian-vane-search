@@ -125,6 +125,7 @@ export default class VaneSearchPlugin extends Plugin {
       // Check every outgoing batch, not only the whole rebuild boundary. A
       // request already sent can finish, but Clear must prevent later requests
       // from a captured provider from transmitting its revoked credential.
+      if (this.unloaded) throw new Error('plugin unloaded');
       if (revision !== this.credentialRevision) throw new Error('API key was cleared');
       return this.post(url, init);
     });

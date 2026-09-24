@@ -389,7 +389,7 @@ describe('atomic provider replacement through the plugin controller', () => {
     p.onunload();
   });
 
-  it('blocks every subsequent authorized HTTP batch after Clear during a multi-batch candidate embedding', async () => {
+  it.each(['clear', 'unload'] as const)('blocks subsequent HTTP batches after %s during a multi-batch candidate embedding', async (action) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const s = await setup(); const p = s.plugin;
     let release!: () => void;
@@ -397,14 +397,22 @@ describe('atomic provider replacement through the plugin controller', () => {
     chooseB(p); p.vaneSettings.maxBatch = 1;
     const building = p.indexVault(true);
     await vi.waitFor(() => expect(s.requests.filter((r) => r.model === 'b')).toHaveLength(1));
-    p.settingsHost().clearApiKey();
+    if (action === 'clear') p.settingsHost().clearApiKey();
+    else p.onunload();
     release(); s.holdDocs(null); await building;
     expect(s.requests.filter((r) => r.model === 'b')).toHaveLength(1);
     expect(p.gen.generation).toBe(1);
-    expect([...s.secrets.values()].every((v) => !v)).toBe(true);
-    await p.search.search('coffee');
-    expect(s.requests.at(-1)?.auth).toBeUndefined();
-    p.onunload();
+    if (action === 'clear') {
+      expect([...s.secrets.values()].every((v) => !v)).toBe(true);
+      await p.search.search('coffee');
+      expect(s.requests.at(-1)?.auth).toBeUndefined();
+      p.onunload();
+    }
+    const restarted = await s.create(configs.b);
+    expect(restarted.gen.generation).toBe(1);
+    await restarted.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe(action === 'clear' ? undefined : 'Bearer original-key');
+    restarted.onunload();
   });
 
   it('honors explicit credential revocation during a candidate build', async () => {
