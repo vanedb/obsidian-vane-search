@@ -73,8 +73,8 @@ describe('reconcileDeletions', () => {
 
     expect(gen.idMap[breadId]).toBeUndefined();
     expect(gen.tombstones).toContain(breadId);
-    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('bread.md#0'))).toBeUndefined();
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('bread.md'))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get([1, 'bread.md#0']))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'bread.md']))).toBeUndefined();
 
     const hits = await searchOccurrences(client, gen, 'sourdough starter feeding schedule');
     expect(hits).not.toContain('bread.md#0');
@@ -117,16 +117,16 @@ describe('removePaths (targeted single-path removal for live delete/rename)', ()
 
     expect(gen.idMap[breadId]).toBeUndefined();
     expect(gen.tombstones).toContain(breadId);
-    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('bread.md#0'))).toBeUndefined();
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('bread.md'))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get([1, 'bread.md#0']))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'bread.md']))).toBeUndefined();
 
     // The other two paths are untouched.
     expect(gen.idMap[coffeeId]).toBe('coffee.md#0');
     expect(gen.idMap[k8sId]).toBe('k8s.md#0');
     expect(gen.tombstones).not.toContain(coffeeId);
     expect(gen.tombstones).not.toContain(k8sId);
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('coffee.md'))).toBeTruthy();
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('k8s.md'))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'coffee.md']))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'k8s.md']))).toBeTruthy();
 
     const hits = await searchOccurrences(client, gen, 'sourdough starter feeding schedule');
     expect(hits).not.toContain('bread.md#0');

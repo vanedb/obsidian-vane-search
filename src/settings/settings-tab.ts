@@ -53,7 +53,7 @@ export class VaneSettingsTab extends PluginSettingTab {
       .addSlider((sl) => sl.setLimits(0, 1, 0.01).setValue(s.minScore).setDynamicTooltip()
         .onChange(async (v) => { s.minScore = v; await this.host.saveSettings(); }));
 
-    new Setting(containerEl).setName('Rebuild index').setDesc('Re-embed the whole vault with the current provider.')
+    new Setting(containerEl).setName('Rebuild index').setDesc('Build with the selected provider. Search keeps using the previous indexed provider until the rebuild succeeds.')
       .addButton((b) => b.setButtonText('Rebuild').setWarning().onClick(() => void this.host.reindex()));
   }
 }

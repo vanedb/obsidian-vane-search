@@ -23,6 +23,7 @@ export interface Transport {
 export class IndexClient {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private seq = 0;
+  private closed: Error | null = null;
 
   constructor(private transport: Transport) {
     transport.onResponse((r) => {
@@ -38,7 +39,14 @@ export class IndexClient {
     });
   }
 
+  dispose(): void {
+    this.closed = new Error('index client closed');
+    for (const p of this.pending.values()) p.reject(this.closed);
+    this.pending.clear();
+  }
+
   private call(msg: DistributiveOmit<IndexRequest, 'id'>): Promise<unknown> {
+    if (this.closed) return Promise.reject(this.closed);
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
