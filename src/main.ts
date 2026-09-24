@@ -2,7 +2,7 @@
 import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon, type Debouncer } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
-  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration,
+  newGeneration, saveGeneration, activateGeneration, loadActiveGeneration, discardGeneration,
   type GenerationRecord,
 } from './storage/generation-store';
 import { IndexClient, workerTransport } from './index/index-client';
@@ -18,8 +18,9 @@ import { reconcileDeletions, removePaths } from './indexer/reconcile';
 import { SearchService, type ChunkMeta } from './search/search-service';
 import { VaneSearchModal } from './ui/search-modal';
 import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui/related-notes-view';
-import { DEFAULT_SETTINGS, buildProvider, isLocalHost, type VaneSettings } from './settings/settings';
+import { DEFAULT_SETTINGS, buildProvider, isLocalHost, providerConfig, type VaneSettings } from './settings/settings';
 import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
+import { hash64 } from './hash';
 import { ConsentModal, needsConsent } from './ui/consent-modal';
 
 const GRAPH_FINGERPRINT = 'dot:m16:ef200'; // bump on metric/params/vanedb format change
@@ -46,6 +47,11 @@ export default class VaneSearchPlugin extends Plugin {
   /** Single serialization point: every reconcile/reindex — manual command or live vault
    *  event — runs as one link in this chain, so none of them ever overlap. */
   private work: Promise<void> = Promise.resolve();
+  private workers = new Map<Worker, IndexClient>();
+  private leases = new Map<Worker, number>();
+  private retired = new Map<Worker, () => void>();
+  private credentialRevision = 0;
+  private candidateSecretId: string | undefined;
   private pathDebouncers = new Map<string, Debouncer<[], void>>();
 
   async onload() {
@@ -88,7 +94,7 @@ export default class VaneSearchPlugin extends Plugin {
     for (const d of this.pathDebouncers.values()) d.cancel();
     this.pathDebouncers.clear();
     this.app.workspace.detachLeavesOfType(RELATED_VIEW_TYPE);
-    this.worker?.terminate();
+    for (const worker of this.workers.keys()) this.stopWorker(worker);
     this.db?.close();
   }
 
@@ -103,9 +109,9 @@ export default class VaneSearchPlugin extends Plugin {
   async saveSettings() { await this.saveData(this.vaneSettings); }
 
   /** Reads the stored API key. An empty string (left by clearApiKey) counts as "no key". */
-  private secret(): string | null {
+  private secret(id = this.apiKeyId): string | null {
     try {
-      const s = this.app.secretStorage?.getSecret?.(this.apiKeyId) ?? null;
+      const s = this.app.secretStorage?.getSecret?.(id) ?? null;
       return s ? s : null;
     } catch { return null; }
   }
@@ -115,6 +121,61 @@ export default class VaneSearchPlugin extends Plugin {
   }
 
 
+  private secretSlot(generation: number): string {
+    return `vane-search-${hash64(this.vaultId())}-key-${generation % 2}`;
+  }
+
+  private rememberProvider(gen: GenerationRecord, config = providerConfig(this.vaneSettings), key = this.secret()) {
+    gen.providerConfig = config;
+    if (key) {
+      gen.secretId = this.secretSlot(gen.generation);
+      this.app.secretStorage.setSecret(gen.secretId, key);
+    }
+  }
+
+  private createWorkerClient() {
+    const worker = spawnIndexWorker();
+    const client = new IndexClient(workerTransport(worker));
+    this.workers.set(worker, client);
+    return { worker, client };
+  }
+
+  private stopWorker(worker: Worker) {
+    this.workers.get(worker)?.dispose();
+    worker.terminate();
+    this.workers.delete(worker);
+  }
+
+  private retireWorker(worker: Worker | null, cleanup: () => void) {
+    if (!worker) { cleanup(); return; }
+    const finish = () => { this.stopWorker(worker); this.retired.delete(worker); cleanup(); };
+    if (this.leases.get(worker)) this.retired.set(worker, finish);
+    else finish();
+  }
+
+  private releaseSecret(id: string | undefined) {
+    if (id && id !== this.gen?.secretId && id !== this.candidateSecretId) {
+      try { this.app.secretStorage.setSecret(id, ''); } catch { /* next slot reuse replaces it */ }
+    }
+  }
+
+  private searchSnapshot() {
+    const worker = this.worker;
+    const meta = this.chunkMeta;
+    if (worker) this.leases.set(worker, (this.leases.get(worker) ?? 0) + 1);
+    return {
+      provider: this.provider, client: this.client!, gen: this.gen,
+      fingerprint: embeddingFingerprint(this.provider, CHUNKER_VERSION),
+      resolve: (occ: string) => meta.get(occ),
+      release: () => {
+        if (!worker) return;
+        const remaining = (this.leases.get(worker) ?? 1) - 1;
+        if (remaining) this.leases.set(worker, remaining);
+        else { this.leases.delete(worker); this.retired.get(worker)?.(); }
+      },
+    };
+  }
+
   private settingsHost(): SettingsHost {
     return {
       settings: this.vaneSettings,
@@ -123,13 +184,15 @@ export default class VaneSearchPlugin extends Plugin {
         this.app.secretStorage.setSecret(this.apiKeyId, key);
         this.vaneSettings.hasApiKey = true;
         void this.saveSettings();
-        this.provider = this.makeProvider();
       },
       clearApiKey: () => {
-        try { this.app.secretStorage.setSecret(this.apiKeyId, ''); } catch { /* ignore */ }
+        this.credentialRevision++;
+        for (const id of [this.apiKeyId, this.secretSlot(0), this.secretSlot(1)]) {
+          try { this.app.secretStorage.setSecret(id, ''); } catch { /* ignore */ }
+        }
         this.vaneSettings.hasApiKey = false;
         void this.saveSettings();
-        this.provider = this.makeProvider();
+        this.provider = buildProvider(this.gen?.providerConfig ?? this.vaneSettings, null, this.post);
       },
       hasApiKey: () => !!this.secret(),
       testConnection: async () => {
@@ -223,11 +286,8 @@ export default class VaneSearchPlugin extends Plugin {
    *  vault index — no separate per-file indexer, just a FileSource that lists one path. */
   private async reindexFile(path: string) {
     if (this.unloaded || !this.indexReady || !this.db || !this.client || !this.gen) return;
-    // Provider switched (e.g. new API key) without a "Rebuild" — expected, not an error:
-    // the stale generation keeps serving search (already gated by ProviderMismatchError),
-    // so quietly skip live reindexing rather than throwing/Notice-ing on every edit.
-    // runFullIndex itself refuses this combination too (belt-and-suspenders); this check
-    // just keeps that from surfacing as a scary "sync failed" Notice.
+    // Legacy indexes whose provider identity cannot be reconstructed remain read-only.
+    // A normal provider switch keeps the old matching provider until activation.
     if (embeddingFingerprint(this.provider, CHUNKER_VERSION) !== this.gen.embeddingFingerprint) return;
     const af = this.app.vault.getAbstractFileByPath(path);
     if (!(af instanceof TFile)) return; // gone already — the delete/rename handler owns this path now
@@ -292,11 +352,15 @@ export default class VaneSearchPlugin extends Plugin {
     }));
   }
 
+  private async readChunkMeta(gen: GenerationRecord) {
+    const rows = await reqAsPromise<(ChunkRow & { generation: number })[]>(
+      this.db!.transaction('chunks').objectStore('chunks').getAll());
+    return new Map(rows.filter((r) => r.generation === gen.generation)
+      .map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+  }
+
   private async refreshChunkMeta() {
-    if (!this.db) return;
-    const rows = await reqAsPromise<ChunkRow[]>(
-      this.db.transaction('chunks').objectStore('chunks').getAll());
-    this.chunkMeta = new Map(rows.map((r) => [r.occurrenceId, { path: r.path, breadcrumb: r.breadcrumb }]));
+    if (this.db && this.gen) this.chunkMeta = await this.readChunkMeta(this.gen);
   }
 
   private async initialize() {
@@ -304,11 +368,17 @@ export default class VaneSearchPlugin extends Plugin {
     if (this.unloaded) { this.db.close(); this.db = null; return; }
     void navigator.storage?.persist?.(); // spec: request durable storage, degrade gracefully
     void navigator.storage?.estimate?.().then((e) => console.debug('vane-search: storage estimate', e));
-    this.worker = spawnIndexWorker();
+    ({ worker: this.worker, client: this.client } = this.createWorkerClient());
     if (this.unloaded) { this.worker.terminate(); this.worker = null; this.db.close(); this.db = null; return; }
-    this.client = new IndexClient(workerTransport(this.worker));
 
     this.gen = await loadActiveGeneration(this.db);
+    if (this.gen?.providerConfig) {
+      this.provider = buildProvider(this.gen.providerConfig, this.gen.secretId ? this.secret(this.gen.secretId) : null, this.post);
+    } else if (this.gen && this.gen.embeddingFingerprint === embeddingFingerprint(this.provider, CHUNKER_VERSION)) {
+      // Upgrade a legacy active generation before settings can change its identity.
+      this.rememberProvider(this.gen);
+      await saveGeneration(this.db, this.gen);
+    }
     const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
     if (this.gen && this.gen.embeddingFingerprint !== fp) {
       // Provider/identity changed since last index — surface a rebuild hint (the full rebuild/keep-read-only modal is deferred to a later phase).
@@ -316,6 +386,7 @@ export default class VaneSearchPlugin extends Plugin {
     }
 
     this.search = new SearchService({
+      getSnapshot: () => this.searchSnapshot(),
       getProvider: () => this.provider,
       client: this.client,
       resolve: (occ) => this.chunkMeta.get(occ),
@@ -347,6 +418,10 @@ export default class VaneSearchPlugin extends Plugin {
       this.setStatus('no index — run "Index vault"');
     }
 
+    if (this.gen?.providerConfig && this.gen.embeddingFingerprint !==
+        embeddingFingerprint(this.makeProvider(), CHUNKER_VERSION)) {
+      new Notice('Vane Search: search still uses the previous indexed provider. Rebuild to apply the provider selected in Settings.');
+    }
     this.registerVaultSync();
   }
 
@@ -354,8 +429,11 @@ export default class VaneSearchPlugin extends Plugin {
     await this.initDone;
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
 
-    const baseUrl = this.vaneSettings.baseUrl;
-    if (!isLocalHost(baseUrl) && !this.secret()) {
+    const config = providerConfig(this.vaneSettings);
+    const key = this.secret();
+    const revision = this.credentialRevision;
+    const baseUrl = config.baseUrl;
+    if (!isLocalHost(baseUrl) && !key) {
       new Notice('Vane Search: set your API key in Settings → Vane Search to start indexing.');
       this.setStatus('needs API key');
       return;
@@ -377,28 +455,62 @@ export default class VaneSearchPlugin extends Plugin {
     // reindex on the shared `gen`/`db`/`client` state.
     await this.enqueue(async () => {
       try {
-        // Settings may have changed since the provider was last built (e.g. via the settings tab).
-        this.provider = this.makeProvider();
-        const fp = embeddingFingerprint(this.provider, CHUNKER_VERSION);
+        if (revision !== this.credentialRevision) throw new Error('API key cleared before rebuild');
+        const provider = buildProvider(config, key, this.post);
+        const fp = embeddingFingerprint(provider, CHUNKER_VERSION);
+        let res: { indexed: number; skipped: number };
         if (!this.gen || this.gen.embeddingFingerprint !== fp || force) {
-          this.gen = newGeneration((this.gen?.generation ?? 0) + 1,
-            { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: this.provider.dimension() });
-          await saveGeneration(this.db!, this.gen);
-          this.indexReady = false; // force the re-init below even if a later branch is added
+          const gen = newGeneration((this.gen?.generation ?? 0) + 1,
+            { embeddingFingerprint: fp, graphFingerprint: GRAPH_FINGERPRINT, dim: provider.dimension() });
+          const candidate = this.createWorkerClient();
+          try {
+            this.rememberProvider(gen, config, key);
+            this.candidateSecretId = gen.secretId;
+            // An interrupted attempt at this generation number is disposable, never active.
+            await discardGeneration(this.db!, gen.generation);
+            await saveGeneration(this.db!, gen);
+            await candidate.client.init(gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
+            res = await runFullIndex({
+              db: this.db!, source: this.fileSource(), provider, client: candidate.client, gen,
+              onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+            });
+            const meta = await this.readChunkMeta(gen);
+            if (this.unloaded) throw new Error('plugin unloaded during rebuild');
+            if (revision !== this.credentialRevision) throw new Error('API key cleared during rebuild');
+            await activateGeneration(this.db!, gen);
+            // No awaits between durable activation and publishing the complete live tuple.
+            const oldWorker = this.worker;
+            const oldGen = this.gen;
+            this.worker = candidate.worker;
+            this.client = candidate.client;
+            this.gen = gen;
+            this.provider = provider;
+            this.chunkMeta = meta;
+            this.indexReady = true;
+            this.candidateSecretId = undefined;
+            this.retireWorker(oldWorker, () => {
+              this.releaseSecret(oldGen?.secretId);
+              if (oldGen && !this.unloaded) void discardGeneration(this.db!, oldGen.generation)
+                .catch((e) => console.warn('vane-search: old generation cleanup failed', e));
+            });
+          } catch (e) {
+            this.stopWorker(candidate.worker);
+            this.candidateSecretId = undefined;
+            this.releaseSecret(gen.secretId);
+            if (!this.unloaded) await discardGeneration(this.db!, gen.generation)
+              .catch((cleanupError) => console.warn('vane-search: candidate cleanup failed', cleanupError));
+            throw e;
+          }
+        } else {
+          res = await runFullIndex({
+            db: this.db!, source: this.fileSource(), provider: this.provider,
+            client: this.client!, gen: this.gen,
+            onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
+          });
+          await this.refreshChunkMeta();
         }
-        if (!this.indexReady) {
-          await this.client!.init(this.gen.dim, capacityFor(this.app.vault.getMarkdownFiles().length));
-          this.indexReady = true;
-        }
-        const res = await runFullIndex({
-          db: this.db!, source: this.fileSource(), provider: this.provider,
-          client: this.client!, gen: this.gen,
-          onProgress: (done, total) => this.setStatus(`indexing ${done}/${total}`),
-        });
-        await activateGeneration(this.db!, this.gen);
-        await this.refreshChunkMeta();
         if (!this.unloaded) {
-          this.setStatus(`ready (${Object.keys(this.gen.idMap).length} chunks)`);
+          this.setStatus(`ready (${Object.keys(this.gen!.idMap).length} chunks)`);
           new Notice(`Vane Search: indexed ${res.indexed}, unchanged ${res.skipped}`);
         }
       } catch (e) {

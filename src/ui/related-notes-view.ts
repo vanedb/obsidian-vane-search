@@ -94,7 +94,7 @@ export class RelatedNotesView extends ItemView {
     }
 
     const centroid = l2Normalize(meanVector(vectors, gen.dim));
-    const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path });
+    const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path, expectedGeneration: gen });
     if (this.closed) return;
     // Deleted-but-indexed notes are dropped here too — reconciliation is deferred to a later phase.
     const results = rawResults.filter((r) => existsAsFile(this.app, r.path));
@@ -105,7 +105,7 @@ export class RelatedNotesView extends ItemView {
     const chunkTx = db.transaction('chunks');
     const chunkStore = chunkTx.objectStore('chunks');
     const chunkRows = await Promise.all(
-      occIds.map((id) => reqAsPromise<ChunkRow | undefined>(chunkStore.get(id)))
+      occIds.map((id) => reqAsPromise<ChunkRow | undefined>(chunkStore.get([gen.generation, id])))
     );
     const inputHashes = chunkRows.filter((r): r is ChunkRow => !!r).map((r) => r.inputHash);
     if (inputHashes.length === 0) return [];

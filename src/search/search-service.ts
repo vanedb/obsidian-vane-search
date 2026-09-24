@@ -5,6 +5,16 @@ import type { GenerationRecord } from '../storage/generation-store';
 export interface ChunkMeta { path: string; breadcrumb: string }
 export interface NoteResult { path: string; breadcrumb: string; score: number }
 
+/** One lease pins provider, graph, mapping and metadata through all async query work. */
+export interface SearchSnapshot {
+  provider: EmbeddingProvider;
+  client: IndexClient;
+  gen: GenerationRecord | null;
+  resolve: (occurrenceId: string) => ChunkMeta | undefined;
+  fingerprint?: string | null;
+  release?: () => void;
+}
+
 const FIRST_K = 64;
 const WIDEN_FACTOR = 4;
 const MAX_WIDENINGS = 2;
@@ -19,6 +29,7 @@ export class ProviderMismatchError extends Error {
 
 export class SearchService {
   constructor(private deps: {
+    getSnapshot?: () => SearchSnapshot;
     getProvider: () => EmbeddingProvider;
     client: IndexClient;
     resolve: (occurrenceId: string) => ChunkMeta | undefined;
@@ -30,23 +41,27 @@ export class SearchService {
     getFloor?: () => number;
   }) {}
 
+  private snapshot(): SearchSnapshot {
+    return this.deps.getSnapshot?.() ?? {
+      provider: this.deps.getProvider(), client: this.deps.client,
+      gen: this.deps.getGen(), resolve: this.deps.resolve,
+      fingerprint: this.deps.getProviderFingerprint?.(),
+    };
+  }
+
   async search(query: string, limit = 20): Promise<NoteResult[]> {
-    // One gen snapshot for BOTH the fingerprint check and the grouping below — getGen() is read
-    // exactly once here. A rebuild can reassign the active generation while we `await embed(...)`;
-    // if grouping re-read getGen() afterwards it could run against a different generation than the
-    // one just checked, silently defeating the ProviderMismatchError check.
-    const gen = this.deps.getGen();
-    if (!gen) return [];
-    if (this.deps.getProviderFingerprint) {
-      const fp = this.deps.getProviderFingerprint();
-      if (fp !== null && fp !== gen.embeddingFingerprint) {
+    const snapshot = this.snapshot();
+    try {
+      const { gen, provider, fingerprint } = snapshot;
+      if (!gen) return [];
+      if (fingerprint != null && fingerprint !== gen.embeddingFingerprint) {
         throw new ProviderMismatchError(
           'This index was built with a different embedding provider. Run "Rebuild index" to re-embed with the current provider.'
         );
       }
-    }
-    const [qv] = await this.deps.getProvider().embed([query], 'query');
-    return this.groupHits(qv, limit, gen);
+      const [qv] = await provider.embed([query], 'query');
+      return await this.groupHits(qv, limit, gen, snapshot);
+    } finally { snapshot.release?.(); }
   }
 
   /**
@@ -58,11 +73,16 @@ export class SearchService {
   async searchVector(
     queryVector: Float32Array,
     limit = 20,
-    opts?: { excludePath?: string },
+    opts?: { excludePath?: string; expectedGeneration?: GenerationRecord },
   ): Promise<NoteResult[]> {
-    const gen = this.deps.getGen();
-    if (!gen) return [];
-    return this.groupHits(queryVector, limit, gen, opts);
+    const snapshot = this.snapshot();
+    try {
+      const gen = snapshot.gen;
+      // A related-notes centroid may have been loaded while a replacement activated.
+      // Never interpret an old-provider vector with a new-provider graph.
+      if (!gen || (opts?.expectedGeneration && opts.expectedGeneration !== gen)) return [];
+      return await this.groupHits(queryVector, limit, gen, snapshot, opts);
+    } finally { snapshot.release?.(); }
   }
 
   /** The widening/group/floor/tombstone loop, against a caller-supplied gen snapshot. */
@@ -70,7 +90,8 @@ export class SearchService {
     queryVector: Float32Array,
     limit: number,
     gen: GenerationRecord,
-    opts?: { excludePath?: string },
+    snapshot: SearchSnapshot,
+    opts?: { excludePath?: string; expectedGeneration?: GenerationRecord },
   ): Promise<NoteResult[]> {
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
@@ -78,13 +99,13 @@ export class SearchService {
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
     let k = FIRST_K;
     for (let attempt = 0; ; attempt++) {
-      const hits = await this.deps.client.search(queryVector, k);
+      const hits = await snapshot.client.search(queryVector, k);
       const byNote = new Map<string, NoteResult>();
       for (const h of hits) {
         if (tombstones.has(h.vaneId) || h.score < floor) continue;
         const occ = gen.idMap[h.vaneId];
         if (!occ) continue;
-        const meta = this.deps.resolve(occ);
+        const meta = snapshot.resolve(occ);
         if (!meta) continue;
         if (opts?.excludePath && meta.path === opts.excludePath) continue;
         const cur = byNote.get(meta.path);
@@ -93,7 +114,7 @@ export class SearchService {
         }
       }
       const notes = [...byNote.values()].sort((a, b) => b.score - a.score);
-      const { size } = await this.deps.client.stats();
+      const { size } = await snapshot.client.stats();
       if (notes.length >= limit || k >= size || attempt >= MAX_WIDENINGS) {
         return notes.slice(0, limit);
       }

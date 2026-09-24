@@ -1,4 +1,4 @@
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export interface VectorRow { fingerprint: string; inputHash: string; vector: Float32Array }
 export interface FileRow { path: string; mtime: number; size: number; contentHash: string; generation: number }
@@ -11,13 +11,36 @@ export function dbName(vaultId: string): string {
 export function openVaneDb(vaultId: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(dbName(vaultId), DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
-      db.createObjectStore('vectors', { keyPath: ['fingerprint', 'inputHash'] });
-      db.createObjectStore('chunks', { keyPath: 'occurrenceId' });
-      db.createObjectStore('files', { keyPath: 'path' });
-      db.createObjectStore('generations', { keyPath: 'generation' });
-      db.createObjectStore('meta', { keyPath: 'key' });
+      const tx = req.transaction!;
+      if (event.oldVersion === 0) {
+        db.createObjectStore('vectors', { keyPath: ['fingerprint', 'inputHash'] });
+        db.createObjectStore('chunks', { keyPath: ['generation', 'occurrenceId'] });
+        db.createObjectStore('files', { keyPath: ['generation', 'path'] });
+        db.createObjectStore('generations', { keyPath: 'generation' });
+        db.createObjectStore('meta', { keyPath: 'key' });
+        return;
+      }
+      // Upgrade in the versionchange transaction: a crash/abort keeps the v1 schema
+      // intact. Old chunks were shared; copy their existing interpretation into each
+      // recorded generation before any replacement can overwrite it.
+      const chunks = tx.objectStore('chunks').getAll();
+      const files = tx.objectStore('files').getAll();
+      const gens = tx.objectStore('generations').getAll();
+      gens.onsuccess = () => {
+        db.deleteObjectStore('chunks');
+        db.deleteObjectStore('files');
+        const chunkStore = db.createObjectStore('chunks', { keyPath: ['generation', 'occurrenceId'] });
+        const fileStore = db.createObjectStore('files', { keyPath: ['generation', 'path'] });
+        for (const gen of gens.result) {
+          const live = new Set(Object.values(gen.idMap));
+          for (const row of chunks.result) if (live.has(row.occurrenceId)) {
+            chunkStore.put({ ...row, generation: gen.generation });
+          }
+        }
+        for (const row of files.result) fileStore.put(row);
+      };
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('indexedDB.open failed'));
