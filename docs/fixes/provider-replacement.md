@@ -27,7 +27,12 @@ the active provider even if the selected settings belong to a failed candidate.
 Slots are reused, failed candidate credentials are cleared, and old credentials
 are cleared after retirement unless the slot has since been reused. Explicitly
 clearing the API key clears both slots, removes the active in-memory credential,
-and prevents an in-progress rebuild from reactivating a revoked credential.
+and prevents an in-progress rebuild from reactivating a revoked credential. At
+publication the provider reads its credential from SecretStorage again, including
+when revocation or rotation happened during the activation transaction itself.
+Replacing a key for the active embedding identity updates search immediately and
+persists in the same slot; changing another provider's key leaves active search
+alone until a successful cutover.
 
 Existing version 1 indexes acquire their provider configuration when the selected
 settings still match. A legacy index whose settings were already changed before
@@ -39,7 +44,7 @@ Validation covers actual plugin-controller transitions with real WASM indexes an
 fake IndexedDB: six injected failures including an actual activation transaction
 abort, 130-file late failure after a committed 128-file candidate window,
 same-provider force failure, restart, interrupted build/retry, successful cutover,
-in-flight queries, A→B→A cache reuse, queued live edit, and explicit key revocation.
+in-flight queries, A→B→A cache reuse, queued live edit, and explicit key revocation/rotation before and during the activation commit.
 A separate schema-1 fixture proves upgrade/reload. The independent PR #16 failed
 replacement reproducer now restores its original row and vector.
 

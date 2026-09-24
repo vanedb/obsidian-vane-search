@@ -286,6 +286,68 @@ describe('atomic provider replacement through the plugin controller', () => {
     restarted.onunload();
   });
 
+  it.each(['clear', 'rotate'] as const)('does not publish a stale credential when %s occurs during the activation transaction', async (change) => {
+    const s = await setup(); const p = s.plugin;
+    chooseB(p);
+    const transaction = p.db.transaction.bind(p.db);
+    let changed = false;
+    vi.spyOn(p.db, 'transaction').mockImplementation((...args: any[]) => {
+      const tx = transaction(...args);
+      if (args[0] === 'generations' && args[1] === 'readwrite') {
+        const objectStore = tx.objectStore.bind(tx);
+        tx.objectStore = (name: string) => {
+          const store = objectStore(name);
+          const put = store.put.bind(store);
+          store.put = (value: any) => {
+            const req = put(value);
+            if (value.generation === 2 && value.state === 'active') {
+              req.onsuccess = () => {
+                changed = true; // request succeeded; the transaction has NOT completed
+                if (change === 'clear') p.settingsHost().clearApiKey();
+                else p.settingsHost().setApiKey('rotated-during-commit');
+              };
+            }
+            return req;
+          };
+          return store;
+        };
+      }
+      return tx;
+    });
+    await p.indexVault(true);
+    expect(changed).toBe(true);
+    expect(p.gen.generation).toBe(2); // complete graph committed; credential comes from its slot
+    await p.search.search('coffee');
+    const auth = change === 'clear' ? undefined : 'Bearer rotated-during-commit';
+    expect(s.requests.at(-1)?.auth).toBe(auth);
+    if (change === 'clear') expect([...s.secrets.values()].every((v) => !v)).toBe(true);
+    p.onunload();
+    const restarted = await s.create(configs.a);
+    await restarted.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe(auth);
+    restarted.onunload();
+  });
+
+  it('rotates same-identity credentials immediately, without forcing a rebuild, and persists the active credential reference', async () => {
+    const s = await setup(); const p = s.plugin;
+    const client = p.client; const gen = p.gen;
+    p.settingsHost().setApiKey('fresh-key');
+    await p.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe('Bearer fresh-key');
+    const before = s.requests.length;
+    await p.indexVault();
+    expect(p.gen).toBe(gen); expect(p.client).toBe(client);
+    expect(s.requests).toHaveLength(before); // unchanged documents were not re-embedded
+    const stored = await generations.loadActiveGeneration(p.db);
+    expect(JSON.stringify(stored)).not.toContain('fresh-key');
+    p.onunload();
+    const restarted = await s.create(configs.b);
+    await restarted.search.search('coffee');
+    expect(s.requests.at(-1)?.model).toBe('a');
+    expect(s.requests.at(-1)?.auth).toBe('Bearer fresh-key');
+    restarted.onunload();
+  });
+
   it('honors explicit credential revocation during a candidate build', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const s = await setup(); const p = s.plugin;

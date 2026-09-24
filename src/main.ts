@@ -52,6 +52,7 @@ export default class VaneSearchPlugin extends Plugin {
   private retired = new Map<Worker, () => void>();
   private credentialRevision = 0;
   private candidateSecretId: string | undefined;
+  private candidateFingerprint: string | undefined;
   private pathDebouncers = new Map<string, Debouncer<[], void>>();
 
   async onload() {
@@ -127,10 +128,8 @@ export default class VaneSearchPlugin extends Plugin {
 
   private rememberProvider(gen: GenerationRecord, config = providerConfig(this.vaneSettings), key = this.secret()) {
     gen.providerConfig = config;
-    if (key) {
-      gen.secretId = this.secretSlot(gen.generation);
-      this.app.secretStorage.setSecret(gen.secretId, key);
-    }
+    gen.secretId = this.secretSlot(gen.generation);
+    this.app.secretStorage?.setSecret?.(gen.secretId, key ?? '');
   }
 
   private createWorkerClient() {
@@ -183,6 +182,17 @@ export default class VaneSearchPlugin extends Plugin {
       setApiKey: (key: string) => {
         this.app.secretStorage.setSecret(this.apiKeyId, key);
         this.vaneSettings.hasApiKey = true;
+        const provider = this.makeProvider();
+        const fp = embeddingFingerprint(provider, CHUNKER_VERSION);
+        // Credential rotation alone does not change embedding identity. Apply it to
+        // the matching active provider immediately, without rebuilding/rebilling.
+        if (fp === this.gen?.embeddingFingerprint) {
+          if (this.gen.secretId) this.app.secretStorage.setSecret(this.gen.secretId, key);
+          this.provider = provider;
+        }
+        if (fp === this.candidateFingerprint && this.candidateSecretId) {
+          this.app.secretStorage.setSecret(this.candidateSecretId, key);
+        }
         void this.saveSettings();
       },
       clearApiKey: () => {
@@ -466,6 +476,7 @@ export default class VaneSearchPlugin extends Plugin {
           try {
             this.rememberProvider(gen, config, key);
             this.candidateSecretId = gen.secretId;
+            this.candidateFingerprint = fp;
             // An interrupted attempt at this generation number is disposable, never active.
             await discardGeneration(this.db!, gen.generation);
             await saveGeneration(this.db!, gen);
@@ -484,10 +495,13 @@ export default class VaneSearchPlugin extends Plugin {
             this.worker = candidate.worker;
             this.client = candidate.client;
             this.gen = gen;
-            this.provider = provider;
+            // Re-read the credential at publication: Clear/Rotate can run while
+            // the activation transaction is committing. Never revive a captured key.
+            this.provider = buildProvider(config, this.secret(gen.secretId), this.post);
             this.chunkMeta = meta;
             this.indexReady = true;
             this.candidateSecretId = undefined;
+            this.candidateFingerprint = undefined;
             this.retireWorker(oldWorker, () => {
               this.releaseSecret(oldGen?.secretId);
               if (oldGen && !this.unloaded) void discardGeneration(this.db!, oldGen.generation)
@@ -496,6 +510,7 @@ export default class VaneSearchPlugin extends Plugin {
           } catch (e) {
             this.stopWorker(candidate.worker);
             this.candidateSecretId = undefined;
+            this.candidateFingerprint = undefined;
             this.releaseSecret(gen.secretId);
             if (!this.unloaded) await discardGeneration(this.db!, gen.generation)
               .catch((cleanupError) => console.warn('vane-search: candidate cleanup failed', cleanupError));
