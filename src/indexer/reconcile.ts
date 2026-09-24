@@ -29,8 +29,8 @@ async function removeOccurrencesForPaths(
 
   // Same tx2 discipline as runFullIndex: chunks + files + generation commit together.
   const tx = db.transaction(['files', 'generations', 'chunks'], 'readwrite');
-  for (const occ of staleOccurrenceIds) tx.objectStore('chunks').delete(occ);
-  for (const path of paths) tx.objectStore('files').delete(path);
+  for (const occ of staleOccurrenceIds) tx.objectStore('chunks').delete([gen.generation, occ]);
+  for (const path of paths) tx.objectStore('files').delete([gen.generation, path]);
   tx.objectStore('generations').put(gen);
   await txDone(tx);
 

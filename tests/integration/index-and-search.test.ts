@@ -54,8 +54,8 @@ describe('runFullIndex', () => {
     expect(res).toEqual({ indexed: 3, skipped: 0 });
     expect((await searchOccurrences(client, gen, 'sourdough feeding'))[0]).toBe('bread.md#0');
     // durable rows exist
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('coffee.md'))).toBeTruthy();
-    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('coffee.md#0'))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'coffee.md']))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get([1, 'coffee.md#0']))).toBeTruthy();
   });
 
   it('second run over unchanged files is a no-op', async () => {
@@ -148,7 +148,7 @@ describe('runFullIndex', () => {
     // The orphaned occurrence is gone from idMap, tombstoned, and its chunk row dropped.
     expect(Object.values(gen.idMap)).not.toContain('big.md#1');
     expect(gen.tombstones).toContain(id1);
-    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get('big.md#1'))).toBeUndefined();
+    expect(await reqAsPromise(db.transaction('chunks').objectStore('chunks').get([1, 'big.md#1']))).toBeUndefined();
 
     // The stale content no longer surfaces this note at all.
     expect(await searchOccurrences(client, gen, 'xylophone quokka narwhal')).not.toContain('big.md#1');
@@ -264,7 +264,7 @@ describe('restart: rebuild from IndexedDB', () => {
     await runFullIndex({ db, source, provider, client, gen });
     await activateGeneration(db, gen);
     // simulate partial IDB eviction: delete one vector row
-    const chunk = await reqAsPromise<{ inputHash: string }>(db.transaction('chunks').objectStore('chunks').get('k8s.md#0'));
+    const chunk = await reqAsPromise<{ inputHash: string }>(db.transaction('chunks').objectStore('chunks').get([1, 'k8s.md#0']));
     const tx = db.transaction('vectors', 'readwrite');
     tx.objectStore('vectors').delete([FP, chunk.inputHash]);
     await txDone(tx);

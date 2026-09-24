@@ -70,7 +70,7 @@ Rebuild is ONE background job (cancellable, progress-reported) with one trigger 
 | `Chunker` | main | Markdown → heading-based chunks. **Embedded text = `{note title} > {heading breadcrumb}\n\n{chunk}`** + one title chunk per note (title + first paragraph). Length measured with the model's tokenizer where available (local), conservative char heuristic + headroom otherwise; 64-bit hash of the **exact embedded input**; frontmatter skipped. Folder moves are free (title unchanged); basename renames re-embed that note's chunks (bounded, one note) |
 | `Indexer` | main | Vault events (debounced ~2 s/file), file-level reconcile table, hash diffing, embed batching, exponential backoff |
 | `EmbeddingProvider` | main | `embed(texts, kind: 'query'\|'doc')`, `dimension()`, `queryPrefix`/`docPrefix`, `maxBatch`. All vectors L2-normalized at this boundary. Responses validated: count matches, order preserved, dimension correct, finite, non-zero norm |
-| `OpenAICompatProvider` | main | `requestUrl` POST `{base}/v1/embeddings`; presets: OpenAI, Ollama (`http://localhost:11434/v1`), LM Studio, OpenRouter |
+| `OpenAICompatProvider` | main | `requestUrl` POST `{base}/embeddings` (base is the full API root, including `/v1` when required; a trailing slash is allowed); presets: OpenAI, Ollama (`http://localhost:11434/v1`), LM Studio, OpenRouter |
 | `LocalTransformersProvider` | main → embed worker | Desktop-only in v1; default model chosen by Phase-0 eval |
 | `FakeEmbeddingProvider` | test | Deterministic vectors from content hash — keystone test artifact |
 | `VaneIndex` (2 impls) | index worker | Ids are JS numbers internally (BigInt only at the wasm boundary); `nextVaneId` persisted in the generation record; ids reset to 0 on every rebuild |

@@ -30,9 +30,9 @@ interface FilePlan {
 
 /**
  * Write-ordering contract (spec "Data flow"):
- *   1. vectors + chunks rows commit first (content-addressed — orphans are harmless cache),
+ *   1. vector rows commit first (content-addressed — orphans are harmless cache),
  *   2. the live index insert happens next (volatile — rebuilt from IDB on restart),
- *   3. the files row and generation record commit LAST, in one transaction.
+ *   3. chunk metadata, the file row and generation record commit LAST, in one transaction.
  * A crash at any point leaves the store consistent: a file is "indexed" only if step 3 committed.
  * This holds per file even though embedding (step 1a/1b) is now batched across a whole
  * WINDOW of files: every file's step-1b write happens before ANY file in the window
@@ -60,12 +60,12 @@ export async function runFullIndex(deps: {
 
   const files = source.list();
   const fileRows = new Map<string, FileRow>(
-    (await reqAsPromise<FileRow[]>(db.transaction('files').objectStore('files').getAll())).map((r) => [r.path, r]),
+    (await reqAsPromise<FileRow[]>(db.transaction('files').objectStore('files').getAll())).filter((r) => r.generation === gen.generation).map((r) => [r.path, r]),
   );
   // Loaded ONCE up front instead of a transaction-per-chunk `chunks.get(...)` —
   // the dominant fixed cost of a fresh index was IDB round-trips, not just embedding.
   const chunkRows = new Map<string, ChunkRow>(
-    (await reqAsPromise<ChunkRow[]>(db.transaction('chunks').objectStore('chunks').getAll())).map((r) => [r.occurrenceId, r]),
+    (await reqAsPromise<(ChunkRow & { generation: number })[]>(db.transaction('chunks').objectStore('chunks').getAll())).filter((r) => r.generation === gen.generation).map((r) => [r.occurrenceId, r]),
   );
   const rev = new Map<string, number>(); // occurrenceId → vaneId
   for (const [vid, occ] of Object.entries(gen.idMap)) rev.set(occ, Number(vid));
@@ -121,16 +121,14 @@ export async function runFullIndex(deps: {
     const justEmbedded = new Map<string, Float32Array>();
     toEmbedHashes.forEach((h, i) => justEmbedded.set(h, embedded[i]));
 
-    // Step 1b: vectors + chunks for the WHOLE window commit together, before
+    // Step 1b: immutable vectors for the WHOLE window commit together, before
     // anything in the window references them — one batched transaction rather
     // than one per chunk.
     if (plans.length) {
-      const tx1 = db.transaction(['vectors', 'chunks'], 'readwrite');
+      const tx1 = db.transaction('vectors', 'readwrite');
       const vStore = tx1.objectStore('vectors');
-      const cStore = tx1.objectStore('chunks');
       toEmbedHashes.forEach((h, i) => vStore.put(
         { fingerprint: gen.embeddingFingerprint, inputHash: h, vector: embedded[i] } satisfies VectorRow));
-      for (const p of plans) for (const c of p.chunks) cStore.put(c.row);
       await txDone(tx1);
     }
 
@@ -194,7 +192,8 @@ export async function runFullIndex(deps: {
       // Stale chunk rows are derived cache, but dropping them in the same transaction
       // keeps the durable store consistent with the generation record in one commit.
       const tx2 = db.transaction(['files', 'generations', 'chunks'], 'readwrite');
-      for (const occ of staleOccurrenceIds) tx2.objectStore('chunks').delete(occ);
+      for (const c of chunks) tx2.objectStore('chunks').put({ ...c.row, generation: gen.generation });
+      for (const occ of staleOccurrenceIds) tx2.objectStore('chunks').delete([gen.generation, occ]);
       tx2.objectStore('files').put({
         path: f.path, mtime: f.mtime, size: f.size,
         contentHash: hash64(content), generation: gen.generation,

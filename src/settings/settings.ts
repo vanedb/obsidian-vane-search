@@ -17,6 +17,15 @@ export interface VaneSettings {
   minScore: number;
 }
 
+/** Only embedding configuration is durable with a generation; credentials stay in SecretStorage. */
+export type ProviderConfig = Pick<VaneSettings,
+  'providerId' | 'baseUrl' | 'model' | 'dimension' | 'queryPrefix' | 'docPrefix' | 'maxBatch'>;
+
+export function providerConfig(s: VaneSettings): ProviderConfig {
+  const { providerId, baseUrl, model, dimension, queryPrefix, docPrefix, maxBatch } = s;
+  return { providerId, baseUrl, model, dimension, queryPrefix, docPrefix, maxBatch };
+}
+
 export interface Preset {
   label: string; baseUrl: string; model: string; dimension: number;
   queryPrefix: string; docPrefix: string; needsKey: boolean;
@@ -60,7 +69,7 @@ export function providerIdFor(baseUrl: string): string {
   try { return `oai:${new URL(baseUrl).host}`; } catch { return 'oai:invalid'; }
 }
 
-export function buildProvider(settings: VaneSettings, apiKey: string | null, post: HttpPost): EmbeddingProvider {
+export function buildProvider(settings: ProviderConfig | VaneSettings, apiKey: string | null, post: HttpPost): EmbeddingProvider {
   // Fold the full baseUrl (not just host) and the query/doc prefixes into the
   // id: they are part of embedding identity and MUST change the fingerprint,
   // or switching between configs that share host/model/dimension but differ

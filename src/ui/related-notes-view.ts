@@ -93,8 +93,12 @@ export class RelatedNotesView extends ItemView {
       return;
     }
 
-    const centroid = l2Normalize(meanVector(vectors, gen.dim));
-    const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path });
+    const centroid = normalizedCentroid(vectors, gen.dim);
+    if (!centroid) {
+      this.renderMessage('No related notes: this note’s sections have no clear shared direction.');
+      return;
+    }
+    const rawResults = await search.searchVector(centroid, RELATED_LIMIT, { excludePath: file.path, expectedGeneration: gen });
     if (this.closed) return;
     // Deleted-but-indexed notes are dropped here too — reconciliation is deferred to a later phase.
     const results = rawResults.filter((r) => existsAsFile(this.app, r.path));
@@ -105,7 +109,7 @@ export class RelatedNotesView extends ItemView {
     const chunkTx = db.transaction('chunks');
     const chunkStore = chunkTx.objectStore('chunks');
     const chunkRows = await Promise.all(
-      occIds.map((id) => reqAsPromise<ChunkRow | undefined>(chunkStore.get(id)))
+      occIds.map((id) => reqAsPromise<ChunkRow | undefined>(chunkStore.get([gen.generation, id])))
     );
     const inputHashes = chunkRows.filter((r): r is ChunkRow => !!r).map((r) => r.inputHash);
     if (inputHashes.length === 0) return [];
@@ -147,8 +151,21 @@ export class RelatedNotesView extends ItemView {
 
 /** Component-wise mean of same-dimension vectors. Caller L2-normalizes the result. */
 export function meanVector(vectors: Float32Array[], dim: number): Float32Array {
-  const sum = new Float32Array(dim);
+  const sum = new Float64Array(dim);
   for (const v of vectors) for (let i = 0; i < dim; i++) sum[i] += v[i];
   for (let i = 0; i < dim; i++) sum[i] /= vectors.length;
-  return sum;
+  return Float32Array.from(sum);
+}
+
+/** Unit-vector means below this floor are dominated by cancellation at float32 precision. */
+export const CENTROID_NORM_FLOOR = 1e-6;
+
+/** Returns null when normalized chunk vectors do not define a reliable shared direction. */
+export function normalizedCentroid(vectors: Float32Array[], dim: number): Float32Array | null {
+  if (vectors.length === 0) return null;
+  const mean = meanVector(vectors, dim);
+  let squaredNorm = 0;
+  for (const component of mean) squaredNorm += component * component;
+  if (Math.sqrt(squaredNorm) <= CENTROID_NORM_FLOOR) return null;
+  return l2Normalize(mean);
 }

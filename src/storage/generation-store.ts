@@ -1,4 +1,5 @@
 import { reqAsPromise, txDone } from './vane-db';
+import type { ProviderConfig } from '../settings/settings';
 
 /**
  * The atomic consistency unit (spec "Persistence"): everything needed to
@@ -11,6 +12,9 @@ export interface GenerationRecord {
   embeddingFingerprint: string;
   graphFingerprint: string;
   dim: number;
+  providerConfig?: ProviderConfig; // legacy generations acquire this when their current provider matches
+  secretId?: string; // opaque SecretStorage reference, never the credential
+
   idMap: Record<number, string>; // vaneId → occurrenceId
   tombstones: number[];
   nextVaneId: number;
@@ -58,4 +62,16 @@ export async function activateGeneration(db: IDBDatabase, rec: GenerationRecord)
   };
   await txDone(tx);
   rec.state = 'active';
+}
+
+/** Removes only an unfinished candidate, including its generation-scoped metadata. */
+export async function discardGeneration(db: IDBDatabase, generation: number): Promise<void> {
+  const tx = db.transaction(['generations', 'chunks', 'files'], 'readwrite');
+  tx.objectStore('generations').delete(generation);
+  for (const name of ['chunks', 'files']) {
+    const store = tx.objectStore(name);
+    const cursor = store.openCursor(IDBKeyRange.bound([generation], [generation + 1], false, true));
+    cursor.onsuccess = () => { const c = cursor.result; if (c) { c.delete(); c.continue(); } };
+  }
+  await txDone(tx);
 }

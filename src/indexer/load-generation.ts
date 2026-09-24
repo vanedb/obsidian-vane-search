@@ -21,7 +21,7 @@ export async function loadGenerationIntoIndex(deps: {
     const batch: { vaneId: number; vector: Float32Array }[] = [];
     for (const [vid, occ] of entries.slice(i, i + BATCH)) {
       const chunk = await reqAsPromise<ChunkRow | undefined>(
-        db.transaction('chunks').objectStore('chunks').get(occ));
+        db.transaction('chunks').objectStore('chunks').get([gen.generation, occ]));
       const vec = chunk && await reqAsPromise<VectorRow | undefined>(
         db.transaction('vectors').objectStore('vectors').get([gen.embeddingFingerprint, chunk.inputHash]));
       if (!chunk || !vec) { missing.push(occ); continue; }

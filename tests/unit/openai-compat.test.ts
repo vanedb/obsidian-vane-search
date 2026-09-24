@@ -19,6 +19,21 @@ const cfg = { id: 'oai:localhost', model: 'nomic-embed-text', dimension: dim, ba
   queryPrefix: 'search_query: ', docPrefix: 'search_document: ', maxBatch: 2 };
 
 describe('OpenAICompatProvider', () => {
+  it.each([
+    ['https://api.openai.com/v1', 'https://api.openai.com/v1/embeddings'],
+    ['https://api.openai.com/v1/', 'https://api.openai.com/v1/embeddings'],
+    ['http://localhost:11434/v1', 'http://localhost:11434/v1/embeddings'],
+    ['http://localhost:11434/v1/', 'http://localhost:11434/v1/embeddings'],
+    ['https://example.invalid/api/v2', 'https://example.invalid/api/v2/embeddings'],
+    ['https://example.invalid', 'https://example.invalid/embeddings'],
+    ['https://example.invalid/', 'https://example.invalid/embeddings'],
+  ])('appends the embeddings route to API root %s', async (baseUrl, expected) => {
+    const post = okPost();
+    await new OpenAICompatProvider({ ...cfg, baseUrl }, post).embed(['test'], 'query');
+    expect(post).toHaveBeenCalledOnce();
+    expect(post).toHaveBeenCalledWith(expected, expect.any(Object));
+  });
+
   it('posts to {baseUrl}/embeddings with model+input and returns L2-normalized vectors in order', async () => {
     const post = okPost();
     const p = new OpenAICompatProvider(cfg, post);
