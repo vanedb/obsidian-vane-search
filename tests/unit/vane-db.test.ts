@@ -32,7 +32,7 @@ describe('openVaneDb', () => {
     tx.objectStore('files').put({ path: 'a.md', mtime: 1, size: 2, contentHash: 'h', generation: 1 });
     tx.objectStore('meta').put({ key: 'schemaVersion', value: 1 });
     await txDone(tx);
-    expect(await reqAsPromise(db.transaction('files').objectStore('files').get('a.md'))).toBeTruthy();
+    expect(await reqAsPromise(db.transaction('files').objectStore('files').get([1, 'a.md']))).toBeTruthy();
     expect(await reqAsPromise(db.transaction('meta').objectStore('meta').get('schemaVersion'))).toBeTruthy();
     db.close();
   });
