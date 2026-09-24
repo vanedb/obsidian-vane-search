@@ -32,7 +32,11 @@ publication the provider reads its credential from SecretStorage again, includin
 when revocation or rotation happened during the activation transaction itself.
 Replacing a key for the active embedding identity updates search immediately and
 persists in the same slot; changing another provider's key leaves active search
-alone until a successful cutover.
+alone until a successful cutover. A queued rebuild resolves any newer key only
+when it was entered for the same requested embedding identity; otherwise it
+aborts without sending a request. Every outgoing embedding HTTP batch checks the
+revocation revision, so Clear permits an already-sent request to finish but stops
+later batches from sending its old credential.
 
 Existing version 1 indexes acquire their provider configuration when the selected
 settings still match. A legacy index whose settings were already changed before

@@ -18,7 +18,7 @@ import { reconcileDeletions, removePaths } from './indexer/reconcile';
 import { SearchService, type ChunkMeta } from './search/search-service';
 import { VaneSearchModal } from './ui/search-modal';
 import { RelatedNotesView, RELATED_VIEW_TYPE, type RelatedNotesHost } from './ui/related-notes-view';
-import { DEFAULT_SETTINGS, buildProvider, isLocalHost, providerConfig, type VaneSettings } from './settings/settings';
+import { DEFAULT_SETTINGS, buildProvider, isLocalHost, providerConfig, type VaneSettings, type ProviderConfig } from './settings/settings';
 import { VaneSettingsTab, type SettingsHost } from './settings/settings-tab';
 import { hash64 } from './hash';
 import { ConsentModal, needsConsent } from './ui/consent-modal';
@@ -51,6 +51,8 @@ export default class VaneSearchPlugin extends Plugin {
   private leases = new Map<Worker, number>();
   private retired = new Map<Worker, () => void>();
   private credentialRevision = 0;
+  private keyRevision = 0;
+  private lastKeyFingerprint: string | undefined;
   private candidateSecretId: string | undefined;
   private candidateFingerprint: string | undefined;
   private pathDebouncers = new Map<string, Debouncer<[], void>>();
@@ -117,8 +119,19 @@ export default class VaneSearchPlugin extends Plugin {
     } catch { return null; }
   }
 
+  private providerFor(config: ProviderConfig, key: string | null): EmbeddingProvider {
+    const revision = this.credentialRevision;
+    return buildProvider(config, key, async (url, init) => {
+      // Check every outgoing batch, not only the whole rebuild boundary. A
+      // request already sent can finish, but Clear must prevent later requests
+      // from a captured provider from transmitting its revoked credential.
+      if (revision !== this.credentialRevision) throw new Error('API key was cleared');
+      return this.post(url, init);
+    });
+  }
+
   private makeProvider(): EmbeddingProvider {
-    return buildProvider(this.vaneSettings, this.secret(), this.post);
+    return this.providerFor(this.vaneSettings, this.secret());
   }
 
 
@@ -184,6 +197,8 @@ export default class VaneSearchPlugin extends Plugin {
         this.vaneSettings.hasApiKey = true;
         const provider = this.makeProvider();
         const fp = embeddingFingerprint(provider, CHUNKER_VERSION);
+        this.keyRevision++;
+        this.lastKeyFingerprint = fp;
         // Credential rotation alone does not change embedding identity. Apply it to
         // the matching active provider immediately, without rebuilding/rebilling.
         if (fp === this.gen?.embeddingFingerprint) {
@@ -202,7 +217,7 @@ export default class VaneSearchPlugin extends Plugin {
         }
         this.vaneSettings.hasApiKey = false;
         void this.saveSettings();
-        this.provider = buildProvider(this.gen?.providerConfig ?? this.vaneSettings, null, this.post);
+        this.provider = this.providerFor(this.gen?.providerConfig ?? this.vaneSettings, null);
       },
       hasApiKey: () => !!this.secret(),
       testConnection: async () => {
@@ -383,7 +398,7 @@ export default class VaneSearchPlugin extends Plugin {
 
     this.gen = await loadActiveGeneration(this.db);
     if (this.gen?.providerConfig) {
-      this.provider = buildProvider(this.gen.providerConfig, this.gen.secretId ? this.secret(this.gen.secretId) : null, this.post);
+      this.provider = this.providerFor(this.gen.providerConfig, this.gen.secretId ? this.secret(this.gen.secretId) : null);
     } else if (this.gen && this.gen.embeddingFingerprint === embeddingFingerprint(this.provider, CHUNKER_VERSION)) {
       // Upgrade a legacy active generation before settings can change its identity.
       this.rememberProvider(this.gen);
@@ -440,10 +455,11 @@ export default class VaneSearchPlugin extends Plugin {
     if (!this.db || !this.client) { new Notice('Vane Search is still starting'); return; }
 
     const config = providerConfig(this.vaneSettings);
-    const key = this.secret();
+    const requestedKey = this.secret();
+    const requestedKeyRevision = this.keyRevision;
     const revision = this.credentialRevision;
     const baseUrl = config.baseUrl;
-    if (!isLocalHost(baseUrl) && !key) {
+    if (!isLocalHost(baseUrl) && !requestedKey) {
       new Notice('Vane Search: set your API key in Settings → Vane Search to start indexing.');
       this.setStatus('needs API key');
       return;
@@ -466,8 +482,18 @@ export default class VaneSearchPlugin extends Plugin {
     await this.enqueue(async () => {
       try {
         if (revision !== this.credentialRevision) throw new Error('API key cleared before rebuild');
-        const provider = buildProvider(config, key, this.post);
-        const fp = embeddingFingerprint(provider, CHUNKER_VERSION);
+        const fp = embeddingFingerprint(this.providerFor(config, null), CHUNKER_VERSION);
+        if (embeddingFingerprint(this.makeProvider(), CHUNKER_VERSION) !== fp) {
+          throw new Error('Provider settings changed before rebuild; retry with the selected provider');
+        }
+        // Key rotation may occur while this operation waits behind live vault work.
+        // Use it only if it was entered for this exact embedding identity; never
+        // redirect another provider's credential to a previously queued endpoint.
+        if (requestedKeyRevision !== this.keyRevision && this.lastKeyFingerprint !== fp) {
+          throw new Error('API key changed for another provider before rebuild');
+        }
+        const key = requestedKeyRevision === this.keyRevision ? requestedKey : this.secret();
+        const provider = this.providerFor(config, key);
         let res: { indexed: number; skipped: number };
         if (!this.gen || this.gen.embeddingFingerprint !== fp || force) {
           const gen = newGeneration((this.gen?.generation ?? 0) + 1,
@@ -497,7 +523,7 @@ export default class VaneSearchPlugin extends Plugin {
             this.gen = gen;
             // Re-read the credential at publication: Clear/Rotate can run while
             // the activation transaction is committing. Never revive a captured key.
-            this.provider = buildProvider(config, this.secret(gen.secretId), this.post);
+            this.provider = this.providerFor(config, this.secret(gen.secretId));
             this.chunkMeta = meta;
             this.indexReady = true;
             this.candidateSecretId = undefined;

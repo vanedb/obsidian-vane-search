@@ -348,6 +348,65 @@ describe('atomic provider replacement through the plugin controller', () => {
     restarted.onunload();
   });
 
+  it('uses a same-identity key rotated while a rebuild waits in the work queue, including document requests and restart', async () => {
+    const s = await setup(); const p = s.plugin;
+    s.source.set('coffee.md', 'changed text requires a document request', 10);
+    let release!: () => void;
+    void p.enqueue(() => new Promise<void>((r) => { release = r; }));
+    const building = p.indexVault(true);
+    await vi.waitFor(() => expect(p.indexing).toBe(true));
+    p.settingsHost().setApiKey('queued-fresh-key');
+    const before = s.requests.length;
+    release(); await building;
+    expect(p.gen.generation).toBe(2);
+    expect(s.requests.slice(before)).toHaveLength(1);
+    expect(s.requests.at(-1)?.auth).toBe('Bearer queued-fresh-key');
+    await p.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe('Bearer queued-fresh-key');
+    p.onunload();
+    const restarted = await s.create();
+    await restarted.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe('Bearer queued-fresh-key');
+    restarted.onunload();
+  });
+
+  it('does not send a different provider credential through a queued endpoint even if selection returns to the old identity', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const s = await setup(); const p = s.plugin;
+    s.source.set('coffee.md', 'changed text must not transmit with the wrong key', 10);
+    let release!: () => void;
+    void p.enqueue(() => new Promise<void>((r) => { release = r; }));
+    const building = p.indexVault(true);
+    await vi.waitFor(() => expect(p.indexing).toBe(true));
+    chooseB(p); p.settingsHost().setApiKey('other-provider-key');
+    Object.assign(p.vaneSettings, configs.a, { queryPrefix: 'search_query: ', docPrefix: 'search_document: ' });
+    const before = s.requests.length;
+    release(); await building;
+    expect(p.gen.generation).toBe(1);
+    expect(s.requests).toHaveLength(before);
+    await p.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBe('Bearer original-key');
+    p.onunload();
+  });
+
+  it('blocks every subsequent authorized HTTP batch after Clear during a multi-batch candidate embedding', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const s = await setup(); const p = s.plugin;
+    let release!: () => void;
+    s.holdDocs(new Promise<void>((r) => { release = r; }));
+    chooseB(p); p.vaneSettings.maxBatch = 1;
+    const building = p.indexVault(true);
+    await vi.waitFor(() => expect(s.requests.filter((r) => r.model === 'b')).toHaveLength(1));
+    p.settingsHost().clearApiKey();
+    release(); s.holdDocs(null); await building;
+    expect(s.requests.filter((r) => r.model === 'b')).toHaveLength(1);
+    expect(p.gen.generation).toBe(1);
+    expect([...s.secrets.values()].every((v) => !v)).toBe(true);
+    await p.search.search('coffee');
+    expect(s.requests.at(-1)?.auth).toBeUndefined();
+    p.onunload();
+  });
+
   it('honors explicit credential revocation during a candidate build', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const s = await setup(); const p = s.plugin;
