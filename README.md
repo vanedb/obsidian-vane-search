@@ -17,15 +17,69 @@ just keywords. No server, no daemon.
 
 After enabling, set an embedding provider (below) before your first index.
 
+## Try it on a real vault
+
+Use Obsidian 1.11.4 or later on desktop, with a separate test vault or a copy
+of your notes. On September 23, 2026, this walkthrough passed in the real
+Obsidian desktop app using six synthetic notes and local Ollama. The query
+**How should I care for young vegetables?** returned **Weekend garden** first
+(displayed score 68%), and selecting it opened the intended note. The same
+results survived quitting and relaunching Obsidian; edits and deletion were
+also reflected in search. See the [acceptance record](docs/releases/0.2.0-desktop-acceptance.md)
+for the exact build, model, full results, and limits. Official publication is
+still tracked separately in [the 0.2.0 checklist](docs/releases/0.2.0.md).
+
+1. Install Vane Search using BRAT or the manual instructions above. For a
+   source build, run `npm ci && npm run build`, then
+   `./scripts/install-dev.sh /path/to/test-vault` and enable the plugin.
+2. Start Ollama on the same machine, then run `ollama pull nomic-embed-text`.
+3. Under **Settings → Vane Search**, choose **Ollama · nomic-embed-text
+   (English)** (`http://localhost:11434/v1`, 768 dimensions). Click **Test
+   connection** and confirm it succeeds before indexing.
+4. Copy the six [synthetic fixture notes](docs/releases/fixtures/0.2.0/) into
+   the test vault. `Weekend garden.md` describes caring for tomato seedlings;
+   the other notes cover unrelated subjects.
+5. Open the command palette and run **Vane Search: Index new and changed
+   notes**. Wait for indexing to finish, then run **Vane Search: Search vault
+   semantically** and enter **How should I care for young vegetables?**
+6. Select `Weekend garden.md` to verify the correct note opens. In the recorded
+   six-note run it ranked first, followed by Cycling maintenance and Piano
+   practice. Ranking and displayed scores can change with the model or vault
+   contents; the observed result is not a guarantee for other vaults.
+
+With the local Ollama preset, note text is sent only to the service on your
+machine. A connection failure usually means Ollama is stopped, the model has
+not been pulled, or the endpoint is wrong. The default provider is OpenAI, so
+select Ollama before indexing if you want this local walkthrough.
+
 ## Releasing (maintainers)
 
 Releases are cut by pushing a git tag that exactly matches `manifest.json`'s
-`version` (no leading `v`). Bump the version in `manifest.json`, `versions.json`,
-and `package.json`, commit, then:
+`version` (no leading `v`). Update `manifest.json`, `versions.json`, and
+`package.json`; run `npm install --package-lock-only --ignore-scripts` to update
+both root versions in `package-lock.json`. Validate the release:
 
 ```bash
-git tag 1.2.3 && git push --follow-tags
+npm ci
+npm run check:release
+npm run typecheck
+npm test
+npm run build
+node scripts/check-size.mjs
 ```
+
+Merge the release PR only after CI and independent review pass. Complete the
+[manual walkthrough checklist](docs/releases/0.2.0.md), then create an annotated
+tag on that merged commit and push that tag explicitly (replace `1.2.3` with
+the manifest version):
+
+```bash
+git tag -a 1.2.3 -m "Vane Search 1.2.3" <reviewed-merged-commit>
+git push origin refs/tags/1.2.3
+```
+
+Pushing this tag publishes a release. A local build or staging artifact is
+not the official demo release.
 
 The [`release` workflow](.github/workflows/release.yml) builds and publishes a
 GitHub Release with `main.js`, `manifest.json`, and `LICENSE` attached as
@@ -79,7 +133,9 @@ embedding endpoint you configure. There is no telemetry.
 ## Development
 
 ```bash
-npm install
+npm ci
+npm run check:release
+npm run typecheck
 npm test              # vitest (unit + integration against real wasm)
 npm run build         # produces main.js
 ./scripts/install-dev.sh /path/to/dev-vault
@@ -90,4 +146,9 @@ The [vanedb](https://github.com/vanedb/vanedb) WASM comes from the
 exact-pinned `devDependency` (build-time only — no Rust toolchain needed).
 esbuild imports its raw `.wasm` export directly and inlines the bytes into
 `main.js` at build time, so the plugin runs offline with no runtime fetch. To
-update, bump the pinned version in `package.json`.
+update, bump the pinned version in `package.json` and regenerate the lockfile.
+
+Demo **0.2.0** currently embeds published **`@vanedb/wasm` 0.1.1**. The demo
+and engine version numbers are independent; this does not claim engine 0.2.0
+integration. A future engine update requires a published package, a regenerated
+lockfile, and the same tests/build/walkthrough checks before release.

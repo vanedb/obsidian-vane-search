@@ -1,7 +1,7 @@
 {
   "id": "vane-search",
   "name": "Vane Search",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.11.4",
   "description": "Semantic search for your vault, powered by VaneDB (WASM HNSW index). Local-first.",
   "author": "Anton Tsvetkov",
