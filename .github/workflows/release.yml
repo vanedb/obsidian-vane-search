@@ -4,8 +4,8 @@ name: Release
 # (Obsidian requires the tag to equal the version — no leading "v").
 # Pre-releases: a tag like 1.2.3-rc1 builds and publishes a GitHub *pre-release*
 # for smoke-testing the pipeline; the strict manifest-match is skipped for these.
-#   npm version patch --no-git-tag-version   # bump manifest.json/versions.json/package.json
-#   git commit -am "release 1.2.3" && git tag 1.2.3 && git push --follow-tags
+# See README.md: update all version files and merge the tested release PR first.
+# Then push an annotated tag that identifies that merged commit.
 on:
   push:
     tags:
@@ -27,6 +27,7 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm run check:release
 
       # For a FINAL tag, fail unless it equals manifest.json's version (Obsidian
       # resolves a release by matching the tag to the manifest version). Skipped
@@ -43,6 +44,7 @@ jobs:
           fi
 
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
       - run: node scripts/check-size.mjs
 
