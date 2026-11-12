@@ -148,7 +148,8 @@ esbuild imports its raw `.wasm` export directly and inlines the bytes into
 `main.js` at build time, so the plugin runs offline with no runtime fetch. To
 update, bump the pinned version in `package.json` and regenerate the lockfile.
 
-Demo **0.2.0** currently embeds published **`@vanedb/wasm` 0.1.1**. The demo
-and engine version numbers are independent; this does not claim engine 0.2.0
-integration. A future engine update requires a published package, a regenerated
-lockfile, and the same tests/build/walkthrough checks before release.
+Demo **0.2.0** embeds published **`@vanedb/wasm` 0.2.0**. The plugin uses the
+engine's in-memory DOT index only; it does not use the engine's filtered
+search or its own persistence. A later engine update requires a published
+package, a regenerated lockfile, and the same tests/build/walkthrough checks
+before release.
