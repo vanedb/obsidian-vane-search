@@ -17,7 +17,6 @@ export interface SearchSnapshot {
 
 const FIRST_K = 64;
 const WIDEN_FACTOR = 4;
-const MAX_WIDENINGS = 2;
 
 /** Thrown when the live provider doesn't match the generation being searched — the query must not be embedded remotely. */
 export class ProviderMismatchError extends Error {
@@ -97,8 +96,11 @@ export class SearchService {
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
 
     // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
+    // Widening has no fixed attempt cap: a session that deleted many notes can bury a live match
+    // under any number of tombstoned hits. It stops when the index is exhausted, or when a page
+    // already reaches below the floor — hits arrive best-first, so nothing further can qualify.
     let k = FIRST_K;
-    for (let attempt = 0; ; attempt++) {
+    for (;;) {
       const hits = await snapshot.client.search(queryVector, k);
       const byNote = new Map<string, NoteResult>();
       for (const h of hits) {
@@ -115,7 +117,9 @@ export class SearchService {
       }
       const notes = [...byNote.values()].sort((a, b) => b.score - a.score);
       const { size } = await snapshot.client.stats();
-      if (notes.length >= limit || k >= size || attempt >= MAX_WIDENINGS) {
+      const exhausted = k >= size || hits.length < k;
+      const belowFloor = hits.length > 0 && hits[hits.length - 1].score < floor;
+      if (notes.length >= limit || exhausted || belowFloor) {
         return notes.slice(0, limit);
       }
       k = Math.min(k * WIDEN_FACTOR, Math.max(size, 1));
