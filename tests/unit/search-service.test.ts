@@ -58,6 +58,31 @@ describe('SearchService', () => {
     expect(ks.length).toBeGreaterThan(1); // widened at least once
   });
 
+  it('keeps widening past 1024 hits when deletes bury the only live match', async () => {
+    // 1100 better-scoring notes were deleted in this session; the survivor is raw rank 1100.
+    const hits = Array.from({ length: 1101 }, (_, i) => ({ vaneId: i, score: i < 1100 ? 0.99 - i / 10000 : 0.707 }));
+    const idMap: Record<number, string> = {};
+    for (let i = 0; i < 1101; i++) idMap[i] = `n${i}.md#0`;
+    const tomb = Array.from({ length: 1100 }, (_, i) => i);
+    const { client, ks } = cannedClient(hits, 1101);
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap, tomb) });
+    const results = await svc.search('anything', 20);
+    expect(results).toEqual([{ path: 'n1100.md', breadcrumb: 'n1100', score: 0.707 }]);
+    expect(ks[ks.length - 1]).toBe(1101); // ended on the whole index, never beyond it
+  });
+
+  it('does not widen once a page already reaches below the similarity floor', async () => {
+    // Hits arrive best-first, so everything past the first sub-floor hit is also below the floor.
+    const hits = Array.from({ length: 2000 }, (_, i) => ({ vaneId: i, score: i < 3 ? 0.9 : 0.1 }));
+    const idMap: Record<number, string> = {};
+    for (let i = 0; i < 2000; i++) idMap[i] = `n${i}.md#0`;
+    const { client, ks } = cannedClient(hits, 2000);
+    const svc = new SearchService({ getProvider: () => provider, client, resolve: (o) => meta(o.split('#')[0]), getGen: () => genWith(idMap), floor: 0.5 });
+    const results = await svc.search('anything', 20);
+    expect(results).toHaveLength(3);
+    expect(ks).toEqual([64]);
+  });
+
   it('applies the similarity floor', async () => {
     const { client } = cannedClient([{ vaneId: 0, score: 0.9 }, { vaneId: 1, score: 0.1 }], 2);
     const gen = genWith({ 0: 'a.md#0', 1: 'b.md#0' });
