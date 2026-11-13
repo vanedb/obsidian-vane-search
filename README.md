@@ -1,36 +1,57 @@
 # Vane Search
 
-Semantic search for Obsidian vaults. It indexes your notes into a vector index
-that runs in-process via WebAssembly (VaneDB) and finds notes by meaning, not
-just keywords. No server, no daemon.
+Semantic search for Obsidian vaults. Vane Search 0.2.0 indexes your notes into
+a vector index that runs inside the app, via VaneDB's WebAssembly HNSW index,
+and finds notes by meaning. There is no server and no daemon. Note text goes
+only to the embedding provider you configure.
 
-## Installing
+## Install
 
-- **Community store** (once listed): Settings → Community plugins → Browse →
-  search "Vane Search" → Install → Enable.
-- **BRAT** (before it's listed, or to track a beta): install the
-  [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin, then "Add beta
-  plugin" with `vanedb/obsidian-vane-search`. BRAT keeps it updated from releases.
-- **Manual**: download `main.js`, `manifest.json`, and `LICENSE` from a
-  [release](https://github.com/vanedb/obsidian-vane-search/releases) into
-  `<vault>/.obsidian/plugins/vane-search/`, then enable it under Community plugins.
+You need Obsidian 1.11.4 or later. Vane Search is distributed from its GitHub
+release. The community plugin directory does not list it (checked against
+`obsidianmd/obsidian-releases` on 2026-11-13), so Browse will not find it.
+
+The release assets Obsidian needs are `main.js`, `manifest.json`, and
+`LICENSE`. This plugin has no stylesheet, so there is no `styles.css` to copy.
+`versions.json` stays in the repository; it is not an install file.
+
+### BRAT
+
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat).
+2. Run **BRAT: Add a beta plugin** and enter `vanedb/obsidian-vane-search`.
+3. Enable **Vane Search** under Settings → Community plugins.
+
+BRAT installs the latest stable GitHub release. For this plugin that release
+is [0.2.0](https://github.com/vanedb/obsidian-vane-search/releases/tag/0.2.0).
+The older tag `0.0.1-rc1` is a prerelease of an earlier build. Leave it
+uninstalled.
+
+### Manual
+
+1. Create the folder `<vault>/.obsidian/plugins/vane-search/`.
+2. Download these three files from the
+   [0.2.0 release](https://github.com/vanedb/obsidian-vane-search/releases/tag/0.2.0)
+   into that folder: `main.js`, `manifest.json`, and `LICENSE`.
+3. Reload Obsidian and enable **Vane Search** under Settings → Community plugins.
+   If community plugins are restricted, turn Restricted mode off first.
 
 After enabling, set an embedding provider (below) before your first index.
 
 ## Try it on a real vault
 
-Use Obsidian 1.11.4 or later on desktop, with a separate test vault or a copy
-of your notes. On September 23, 2026, this walkthrough passed in the real
-Obsidian desktop app using six synthetic notes and local Ollama. The query
-**How should I care for young vegetables?** returned **Weekend garden** first
-(displayed score 68%), and selecting it opened the intended note. The same
-results survived quitting and relaunching Obsidian; edits and deletion were
-also reflected in search. See the [acceptance record](docs/releases/0.2.0-desktop-acceptance.md)
-for the exact build, model, full results, and limits. Official publication is
-still tracked separately in [the 0.2.0 checklist](docs/releases/0.2.0.md).
+Use a separate test vault or a copy of your notes. On September 23, 2026, this
+walkthrough passed in the Obsidian desktop app with six synthetic notes and
+local Ollama. The query **How should I care for young vegetables?** returned
+**Weekend garden** first (displayed score 68%), and selecting it opened that
+note. The same results survived quitting and relaunching Obsidian; edits and
+deletion were reflected in search. That recorded run bundled an earlier
+engine. This 0.2.0 release bundles published `@vanedb/wasm` 0.2.0, so
+displayed scores on the same notes can differ. The
+[acceptance record](docs/releases/0.2.0-desktop-acceptance.md) has the model,
+the full result list, and the limits of that run.
 
-1. Install Vane Search using BRAT or the manual instructions above. For a
-   source build, run `npm ci && npm run build`, then
+1. Install Vane Search with BRAT or the manual steps above. To build from
+   this repository instead, run `npm ci && npm run build`, then
    `./scripts/install-dev.sh /path/to/test-vault` and enable the plugin.
 2. Start Ollama on the same machine, then run `ollama pull nomic-embed-text`.
 3. Under **Settings → Vane Search**, choose **Ollama · nomic-embed-text
@@ -70,12 +91,12 @@ node scripts/check-size.mjs
 
 Merge the release PR only after CI and independent review pass. Complete the
 [manual walkthrough checklist](docs/releases/0.2.0.md), then create an annotated
-tag on that merged commit and push that tag explicitly (replace `1.2.3` with
-the manifest version):
+tag on that merged commit and push that tag explicitly. For this release the
+tag is `0.2.0`, with no leading `v`:
 
 ```bash
-git tag -a 1.2.3 -m "Vane Search 1.2.3" <reviewed-merged-commit>
-git push origin refs/tags/1.2.3
+git tag -a 0.2.0 -m "Vane Search 0.2.0" <reviewed-merged-commit>
+git push origin refs/tags/0.2.0
 ```
 
 Pushing this tag publishes a release. A local build or staging artifact is
