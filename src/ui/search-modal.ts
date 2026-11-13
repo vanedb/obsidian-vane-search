@@ -2,20 +2,13 @@ import { App, SuggestModal, TFile } from 'obsidian';
 import { ProviderMismatchError, type SearchService, type NoteResult } from '../search/search-service';
 import { openNoteOrNotice } from './open-note';
 import { RequestGate } from './request-gate';
+import { extractPreview } from './preview';
 
 const DEBOUNCE_MS = 300;
-const PREVIEW_LEN = 140;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A NoteResult plus an optional text snippet for display — local to the modal, not part of the search-service contract. */
 type SearchResult = NoteResult & { preview?: string };
-
-/** Strips leading YAML frontmatter and a leading markdown heading, then collapses whitespace and truncates. */
-function extractPreview(raw: string): string {
-  const body = raw.replace(/^---\n[\s\S]*?\n---\n/, '');
-  const withoutHeading = body.replace(/^\s*#{1,6}\s+.*(\n|$)/, '');
-  return withoutHeading.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_LEN);
-}
 
 export class VaneSearchModal extends SuggestModal<SearchResult> {
   private gate = new RequestGate();
