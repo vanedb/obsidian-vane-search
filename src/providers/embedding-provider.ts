@@ -8,7 +8,7 @@ export interface EmbeddingProvider {
   embed(texts: string[], kind: 'query' | 'doc'): Promise<Float32Array[]>;
 }
 
-/** Embedding identity axis (spec "Versioning"): change ⇒ re-embed everything. */
+/** Embedding identity: a change re-embeds everything. */
 export function embeddingFingerprint(p: EmbeddingProvider, chunkerVersion: number): string {
   return `${p.id}:${p.model}:${p.dimension()}:c${chunkerVersion}`;
 }

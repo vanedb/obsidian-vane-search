@@ -3,8 +3,8 @@ import { l2Normalize, type EmbeddingProvider } from './embedding-provider';
 
 /**
  * Deterministic feature-hashing embedder: token unigrams hashed into dim buckets.
- * Similar texts get similar vectors, so ranking tests are meaningful — the
- * keystone test artifact of the spec. Never ships to users as a real provider.
+ * Similar texts get similar vectors, so ranking tests are meaningful.
+ * Test-only; never shipped as a real provider.
  */
 export class FakeEmbeddingProvider implements EmbeddingProvider {
   readonly id = 'fake';

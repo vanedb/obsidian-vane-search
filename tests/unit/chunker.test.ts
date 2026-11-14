@@ -15,9 +15,9 @@ describe('chunkWholeFile', () => {
     const a = chunkWholeFile('a.md', 'same')[0].row.inputHash;
     expect(chunkWholeFile('a.md', 'same')[0].row.inputHash).toBe(a);
     expect(chunkWholeFile('a.md', 'different')[0].row.inputHash).not.toBe(a);
-    // title is part of the embedded text ⇒ basename rename re-embeds (spec)
+    // title is part of the embedded text ⇒ basename rename re-embeds
     expect(chunkWholeFile('b.md', 'same')[0].row.inputHash).not.toBe(a);
-    // folder move keeps title ⇒ same hash ⇒ re-embed is free (spec)
+    // folder move keeps title ⇒ same hash ⇒ re-embed is free
     expect(chunkWholeFile('other/folder/a.md', 'same')[0].row.inputHash).toBe(a);
   });
 
