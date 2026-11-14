@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Plugin, Setting, Notice } from 'obsidian';
 import { PRESETS, type VaneSettings } from './settings';
+import { versionLine } from './about';
 
 export interface SettingsHost {
   settings: VaneSettings;
@@ -12,7 +13,7 @@ export interface SettingsHost {
 }
 
 export class VaneSettingsTab extends PluginSettingTab {
-  constructor(app: App, plugin: Plugin, private host: SettingsHost) { super(app, plugin); }
+  constructor(app: App, private plugin: Plugin, private host: SettingsHost) { super(app, plugin); }
 
   display(): void {
     const { containerEl } = this;
@@ -55,5 +56,7 @@ export class VaneSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('Rebuild index').setDesc('Build with the selected provider. Search keeps using the previous indexed provider until the rebuild succeeds.')
       .addButton((b) => b.setButtonText('Rebuild').setWarning().onClick(() => void this.host.reindex()));
+
+    new Setting(containerEl).setName('Version').setDesc(versionLine(this.plugin.manifest.version, __VANEDB_ENGINE_VERSION__));
   }
 }

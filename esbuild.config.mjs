@@ -1,6 +1,11 @@
+import { readFileSync } from 'node:fs';
 import esbuild from 'esbuild';
 
 const prod = process.argv.includes('production');
+
+// Read the engine version from the installed package, not from package.json's
+// range: the settings tab must name what is actually inlined in the bundle.
+const engineVersion = JSON.parse(readFileSync('node_modules/@vanedb/wasm/package.json', 'utf8')).version;
 
 // 1. Bundle the index worker to a self-contained IIFE string (wasm inlined as Uint8Array).
 // The vendored ESM glue references `import.meta.url` in its async default-init path (unused —
@@ -38,7 +43,10 @@ const buildOptions = {
   outfile: 'main.js',
   minify: prod,
   logLevel: 'info',
-  define: { __INDEX_WORKER_SOURCE__: JSON.stringify(worker.outputFiles[0].text) },
+  define: {
+    __INDEX_WORKER_SOURCE__: JSON.stringify(worker.outputFiles[0].text),
+    __VANEDB_ENGINE_VERSION__: JSON.stringify(engineVersion),
+  },
 };
 
 if (prod) {
