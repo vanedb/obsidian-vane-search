@@ -1,4 +1,4 @@
-export const DB_VERSION = 2;
+const DB_VERSION = 2;
 
 export interface VectorRow { fingerprint: string; inputHash: string; vector: Float32Array }
 export interface FileRow { path: string; mtime: number; size: number; contentHash: string; generation: number }
