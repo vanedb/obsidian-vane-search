@@ -1,4 +1,3 @@
-// src/main.ts
 import { debounce, Editor, Notice, Plugin, TAbstractFile, TFile, requestUrl, setIcon, type Debouncer } from 'obsidian';
 import { openVaneDb, reqAsPromise } from './storage/vane-db';
 import {
@@ -61,7 +60,7 @@ export default class VaneSearchPlugin extends Plugin {
     await this.loadSettings();
     this.provider = this.makeProvider();
 
-    // Light onload (spec): commands only; real init after layout is ready.
+    // Light onload: commands only; real init after layout is ready.
     this.addCommand({ id: 'open-search', name: 'Search vault semantically', callback: () => this.openSearch() });
     this.addCommand({ id: 'index-vault', name: 'Index new and changed notes', callback: () => void this.indexVault() });
     this.addCommand({ id: 'rebuild-index', name: 'Rebuild index from scratch', callback: () => void this.indexVault(true) });
@@ -360,7 +359,7 @@ export default class VaneSearchPlugin extends Plugin {
     return f instanceof TFile && f.extension === 'md';
   }
 
-  /** Live vault-event wiring (spec section D). Registered once init is ready; each handler
+  /** Live vault-event wiring. Registered once init is ready; each handler
    *  is a thin adapter onto the two reused primitives — reconcileDeletions and runFullIndex
    *  (via reindexFile/removePath) — debounced and serialized through `enqueue`. */
   private registerVaultSync() {
@@ -392,7 +391,7 @@ export default class VaneSearchPlugin extends Plugin {
   private async initialize() {
     this.db = await openVaneDb(this.vaultId());
     if (this.unloaded) { this.db.close(); this.db = null; return; }
-    void navigator.storage?.persist?.(); // spec: request durable storage, degrade gracefully
+    void navigator.storage?.persist?.(); // request durable storage; degrade gracefully
     void navigator.storage?.estimate?.().then((e) => console.debug('vane-search: storage estimate', e));
     ({ worker: this.worker, client: this.client } = this.createWorkerClient());
     if (this.unloaded) { this.worker.terminate(); this.worker = null; this.db.close(); this.db = null; return; }
