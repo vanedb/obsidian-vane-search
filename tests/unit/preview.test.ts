@@ -11,6 +11,14 @@ describe('extractPreview', () => {
       .toBe('Visible body after frontmatter.');
   });
 
+  it('strips a leading heading written with Windows line endings', () => {
+    expect(extractPreview('---\r\ntags: [secret]\r\n---\r\n\r\n# Title\r\nVisible body.')).toBe(
+      'Visible body.',
+    );
+    expect(extractPreview('# Title\r\n')).toBe('');
+    expect(extractPreview('Visible body.\r\nSecond line.')).toBe('Visible body. Second line.');
+  });
+
   it('leaves a body that merely contains a rule', () => {
     expect(extractPreview('Intro\n---\nmore')).toBe('Intro --- more');
   });
