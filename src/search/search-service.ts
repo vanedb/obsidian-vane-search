@@ -95,7 +95,7 @@ export class SearchService {
     const tombstones = new Set(gen.tombstones);
     const floor = this.deps.getFloor ? this.deps.getFloor() : (this.deps.floor ?? -Infinity);
 
-    // Tombstones are filtered post-search, so a starved result set widens k (spec "Data flow").
+    // Tombstones are filtered post-search, so a starved result set widens k.
     // Widening has no fixed attempt cap: a session that deleted many notes can bury a live match
     // under any number of tombstoned hits. It stops when the index is exhausted, or when a page
     // already reaches below the floor — hits arrive best-first, so nothing further can qualify.

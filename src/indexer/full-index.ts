@@ -11,13 +11,9 @@ export interface FileSource { list(): FileMeta[]; read(path: string): Promise<st
 type ChunkEntry = { row: ChunkRow; embeddedText: string };
 
 /**
- * Files are processed in windows of this size (not all at once) to bound
- * memory: within a window we read+chunk every file, embed the whole window's
- * worth of unique texts in ONE provider.embed() call (the provider internally
- * splits that into maxBatch/maxBatchChars requests), then finalize files one
- * at a time. This turns "N files ⇒ N embedding round-trips" into "N files ⇒
- * N/WINDOW planning passes, each driving O(1) embed() calls" — the request
- * count tracks the provider's own batching, not the file count.
+ * Files are processed in windows to bound memory. Each window's unique texts go
+ * to one provider.embed() call, so request count follows provider batching, not
+ * file count.
  */
 const WINDOW = 128;
 
@@ -29,14 +25,12 @@ interface FilePlan {
 }
 
 /**
- * Write-ordering contract (spec "Data flow"):
- *   1. vector rows commit first (content-addressed — orphans are harmless cache),
- *   2. the live index insert happens next (volatile — rebuilt from IDB on restart),
- *   3. chunk metadata, the file row and generation record commit LAST, in one transaction.
- * A crash at any point leaves the store consistent: a file is "indexed" only if step 3 committed.
- * This holds per file even though embedding (step 1a/1b) is now batched across a whole
- * WINDOW of files: every file's step-1b write happens before ANY file in the window
- * reaches step 2, and step 2/3 still run one file at a time, in order, exactly as before.
+ * Write order:
+ *   1. vector rows commit first (content-addressed; orphans are harmless cache),
+ *   2. the live index insert happens next (volatile; rebuilt from IDB on restart),
+ *   3. chunk metadata, the file row and generation record commit last, in one transaction.
+ * A crash at any point leaves the store consistent: a file is indexed only if step 3 committed.
+ * Step 1 runs for the whole window before any file reaches step 2; steps 2–3 run per file, in order.
  */
 export async function runFullIndex(deps: {
   db: IDBDatabase;
@@ -48,11 +42,8 @@ export async function runFullIndex(deps: {
 }): Promise<{ indexed: number; skipped: number }> {
   const { db, source, provider, client, gen } = deps;
 
-  // Backstop against writing a vector row keyed by `gen.embeddingFingerprint` that was
-  // actually produced by a DIFFERENT provider (e.g. the live single-file reindex path
-  // runs whatever `this.provider` currently is, which can drift from `this.gen` if the
-  // user switches provider without clicking "Rebuild"). Every caller gets this for free —
-  // the manual index path never trips it because it rebuilds `gen` to match first.
+  // Never store vectors under a fingerprint produced by a different provider (e.g. the
+  // live reindex path after a provider switch without Rebuild).
   const providerFp = embeddingFingerprint(provider, CHUNKER_VERSION);
   if (providerFp !== gen.embeddingFingerprint) {
     throw new Error('Vane Search: provider/generation fingerprint mismatch — rebuild the index');
@@ -62,8 +53,7 @@ export async function runFullIndex(deps: {
   const fileRows = new Map<string, FileRow>(
     (await reqAsPromise<FileRow[]>(db.transaction('files').objectStore('files').getAll())).filter((r) => r.generation === gen.generation).map((r) => [r.path, r]),
   );
-  // Loaded ONCE up front instead of a transaction-per-chunk `chunks.get(...)` —
-  // the dominant fixed cost of a fresh index was IDB round-trips, not just embedding.
+  // Loaded once: per-chunk IDB round-trips dominated fresh-index time.
   const chunkRows = new Map<string, ChunkRow>(
     (await reqAsPromise<(ChunkRow & { generation: number })[]>(db.transaction('chunks').objectStore('chunks').getAll())).filter((r) => r.generation === gen.generation).map((r) => [r.occurrenceId, r]),
   );
@@ -75,14 +65,11 @@ export async function runFullIndex(deps: {
   for (let start = 0; start < files.length; start += WINDOW) {
     const windowFiles = files.slice(start, start + WINDOW);
 
-    // ---- Pass 1: plan (no network) — read, chunk, and diff every non-skipped
-    // file in the window against the persisted chunk rows and `rev`. ----
+    // Pass 1 (no network): read, chunk and diff each file against stored chunk rows.
     const plans: FilePlan[] = [];
     for (const f of windowFiles) {
       const prev = fileRows.get(f.path);
-      // The generation check matters: after a provider/chunker change the new
-      // generation starts empty, and a files row from the OLD generation must not
-      // satisfy the skip even though mtime/size never moved.
+      // A row from an older generation must not satisfy the skip, even if mtime/size match.
       if (prev && prev.generation === gen.generation && prev.mtime === f.mtime && prev.size === f.size) {
         skipped++; deps.onProgress?.(++done, files.length); continue;
       }
@@ -97,9 +84,7 @@ export async function runFullIndex(deps: {
       plans.push({ f, content, chunks, changed });
     }
 
-    // ---- Pass 2: collect this window's changed chunks, deduped by inputHash
-    // (identical embedded text embeds once, same as before — just window-wide
-    // instead of file-wide). ----
+    // Pass 2: changed chunks in the window, deduped by inputHash.
     const textByHash = new Map<string, string>();
     for (const p of plans) {
       for (const c of p.changed) {
@@ -108,22 +93,17 @@ export async function runFullIndex(deps: {
     }
     const uniqueHashes = [...textByHash.keys()];
 
-    // Which of those already have a stored vector? Batched inside one readonly transaction
-    // instead of one transaction per hash.
+    // Reuse vectors already stored for this fingerprint.
     const storedVectors = await getVectors(db, gen.embeddingFingerprint, uniqueHashes);
     const toEmbedHashes = uniqueHashes.filter((h) => !storedVectors.has(h));
 
-    // ---- Pass 3: embed the whole window's missing unique texts in ONE call —
-    // the provider splits this into maxBatch/maxBatchChars requests internally,
-    // so the request count tracks provider batching, not file count. ----
+    // Pass 3: embed the missing texts in one call.
     const toEmbedTexts = toEmbedHashes.map((h) => textByHash.get(h)!);
     const embedded = toEmbedTexts.length ? await provider.embed(toEmbedTexts, 'doc') : [];
     const justEmbedded = new Map<string, Float32Array>();
     toEmbedHashes.forEach((h, i) => justEmbedded.set(h, embedded[i]));
 
-    // Step 1b: immutable vectors for the WHOLE window commit together, before
-    // anything in the window references them — one batched transaction rather
-    // than one per chunk.
+    // Write step 1: the window's vectors, in one transaction.
     if (plans.length) {
       const tx1 = db.transaction('vectors', 'readwrite');
       const vStore = tx1.objectStore('vectors');
@@ -134,7 +114,7 @@ export async function runFullIndex(deps: {
 
     const vectorFor = (inputHash: string): Float32Array => justEmbedded.get(inputHash) ?? storedVectors.get(inputHash)!;
 
-    // ---- Pass 4: per-file finalize, in order — unchanged from before. ----
+    // Pass 4: finalize each file in order (write steps 2–3).
     for (const p of plans) {
       const { f, content, chunks, changed } = p;
 

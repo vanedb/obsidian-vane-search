@@ -2,7 +2,7 @@ import { reqAsPromise, txDone } from './vane-db';
 import type { ProviderConfig } from '../settings/settings';
 
 /**
- * The atomic consistency unit (spec "Persistence"): everything needed to
+ * The atomic consistency unit: everything needed to
  * interpret the index — id mapping, tombstones, id counter, identity
  * fingerprints — commits together or not at all.
  */
