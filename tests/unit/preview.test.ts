@@ -23,6 +23,24 @@ describe('extractPreview', () => {
     expect(extractPreview('Intro\n---\nmore')).toBe('Intro --- more');
   });
 
+  it('keeps a leading horizontal rule that is not frontmatter', () => {
+    expect(extractPreview('---\nA paragraph after a horizontal rule.')).toBe(
+      '--- A paragraph after a horizontal rule.',
+    );
+  });
+
+  it('strips empty frontmatter before the body', () => {
+    expect(extractPreview('---\n---\nbody')).toBe('body');
+  });
+
+  it('strips empty frontmatter written with Windows line endings', () => {
+    expect(extractPreview('---\r\n---\r\nbody')).toBe('body');
+  });
+
+  it('strips empty frontmatter with no body', () => {
+    expect(extractPreview('---\n---')).toBe('');
+  });
+
   it('truncates to 140 characters', () => {
     expect(extractPreview('x'.repeat(300))).toHaveLength(140);
   });

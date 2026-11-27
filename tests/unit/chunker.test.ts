@@ -28,6 +28,46 @@ describe('chunkWholeFile', () => {
     expect(fm.row.inputHash).toBe(plain.row.inputHash);
   });
 
+  it('skips YAML frontmatter written with Windows line endings', () => {
+    const plain = chunkWholeFile('n.md', 'body text')[0];
+    const content = '---\r\ntags: [x]\r\n---\r\nbody text';
+    const fm = chunkWholeFile('n.md', content)[0];
+    expect(fm.embeddedText).toBe(plain.embeddedText);
+    expect(fm.row.inputHash).toBe(plain.row.inputHash);
+    expect(content.slice(fm.row.offsets[0], fm.row.offsets[1])).toBe('body text');
+  });
+
+  it('does not treat a leading horizontal rule as frontmatter', () => {
+    const content = '---\nA paragraph after a horizontal rule.';
+    const [c] = chunkWholeFile('n.md', content);
+    expect(c.embeddedText).toBe('n\n\n---\nA paragraph after a horizontal rule.');
+    expect(content.slice(c.row.offsets[0], c.row.offsets[1])).toBe(content);
+  });
+
+  it('skips empty YAML frontmatter', () => {
+    const plain = chunkWholeFile('n.md', 'body')[0];
+    const content = '---\n---\nbody';
+    const fm = chunkWholeFile('n.md', content)[0];
+    expect(fm.embeddedText).toBe(plain.embeddedText);
+    expect(fm.row.inputHash).toBe(plain.row.inputHash);
+    expect(content.slice(fm.row.offsets[0], fm.row.offsets[1])).toBe('body');
+  });
+
+  it('skips empty YAML frontmatter written with Windows line endings', () => {
+    const plain = chunkWholeFile('n.md', 'body')[0];
+    const content = '---\r\n---\r\nbody';
+    const fm = chunkWholeFile('n.md', content)[0];
+    expect(fm.embeddedText).toBe(plain.embeddedText);
+    expect(fm.row.inputHash).toBe(plain.row.inputHash);
+    expect(content.slice(fm.row.offsets[0], fm.row.offsets[1])).toBe('body');
+  });
+
+  it('treats empty frontmatter with no body as an empty note', () => {
+    const [c] = chunkWholeFile('Ideas.md', '---\n---');
+    expect(c.embeddedText).toBe('Ideas');
+    expect(c.row.offsets).toEqual([0, 0]);
+  });
+
   it('empty note still yields a title-only chunk', () => {
     const [c] = chunkWholeFile('Ideas.md', '');
     expect(c.embeddedText).toBe('Ideas');
@@ -40,8 +80,8 @@ describe('chunkWholeFile', () => {
     expect(content.slice(c.row.offsets[0], c.row.offsets[1])).toBe('Body here');
   });
 
-  it('exports CHUNKER_VERSION 1', () => {
-    expect(CHUNKER_VERSION).toBe(1);
+  it('exports CHUNKER_VERSION 2', () => {
+    expect(CHUNKER_VERSION).toBe(2);
   });
 
   describe('bounded chunking of oversized notes', () => {

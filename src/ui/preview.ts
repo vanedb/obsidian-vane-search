@@ -6,7 +6,7 @@ const PREVIEW_LEN = 140;
  * frontmatter that is not stripped shows its keys in the search results.
  */
 export function extractPreview(raw: string): string {
-  const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/, '');
+  const body = raw.replace(/^---\r?\n(?:[\s\S]*?\r?\n)?---(\r?\n|$)/, '');
   const withoutHeading = body.replace(/^\s*#{1,6}\s+.*(\r?\n|$)/, '');
   return withoutHeading.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_LEN);
 }
