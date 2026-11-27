@@ -80,8 +80,8 @@ describe('chunkWholeFile', () => {
     expect(content.slice(c.row.offsets[0], c.row.offsets[1])).toBe('Body here');
   });
 
-  it('exports CHUNKER_VERSION 1', () => {
-    expect(CHUNKER_VERSION).toBe(1);
+  it('exports CHUNKER_VERSION 2', () => {
+    expect(CHUNKER_VERSION).toBe(2);
   });
 
   describe('bounded chunking of oversized notes', () => {

@@ -1,7 +1,7 @@
 import { hash64 } from '../hash';
 
 /** Bumping this is an embedding-identity change: every note re-embeds. */
-export const CHUNKER_VERSION = 1;
+export const CHUNKER_VERSION = 2;
 
 // Budget is in CHARACTERS as a conservative proxy for the embedding model's
 // token limit (e.g. OpenAI text-embedding-3-small: 8191 tokens). ~12000 chars
